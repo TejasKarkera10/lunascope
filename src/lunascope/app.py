@@ -1,3 +1,58 @@
+import sys
+import time
+import tempfile
+from pathlib import Path
+import os
+
+_BOOT_T0 = time.monotonic()
+
+
+def _boot_log(message: str) -> None:
+    elapsed = time.monotonic() - _BOOT_T0
+    sys.stderr.write(f"[lunascope +{elapsed:0.2f}s] {message}\n")
+    sys.stderr.flush()
+
+
+_boot_log("Initiating startup...")
+
+
+def _user_cache_root() -> Path:
+    if sys.platform == "win32":
+        for env_var in ("LOCALAPPDATA", "APPDATA"):
+            value = os.environ.get(env_var)
+            if value:
+                return Path(value)
+    elif sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches"
+    else:
+        xdg_cache = os.environ.get("XDG_CACHE_HOME")
+        if xdg_cache:
+            return Path(xdg_cache)
+        return Path.home() / ".cache"
+    return Path(tempfile.gettempdir()) / "lunascope-cache"
+
+
+def _configure_runtime_cache_dirs() -> None:
+    cache_root = _user_cache_root() / "lunascope"
+    mpl_cache = cache_root / "matplotlib"
+
+    try:
+        mpl_cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        cache_root = Path(tempfile.gettempdir()) / "lunascope-cache"
+        mpl_cache = cache_root / "matplotlib"
+        mpl_cache.mkdir(parents=True, exist_ok=True)
+
+    os.environ.setdefault("MPLCONFIGDIR", str(mpl_cache))
+
+    # On Unix, fontconfig typically uses XDG_CACHE_HOME. If it is unset and the
+    # default cache location is not writable, Matplotlib can end up rebuilding
+    # its font metadata on every launch.
+    if os.name != "nt":
+        os.environ.setdefault("XDG_CACHE_HOME", str(cache_root))
+
+
+_configure_runtime_cache_dirs()
 
 #  --------------------------------------------------------------------
 #
@@ -20,18 +75,21 @@
 #
 #  --------------------------------------------------------------------
 
+import argparse
+
+_boot_log("Importing lunapi...")
 import lunapi as lp
 
-import argparse
-from pathlib import Path
-import sys, os
-
+_boot_log("Importing pyqtgraph...")
 import pyqtgraph as pg
+
+_boot_log("Importing PySide6...")
 from PySide6.QtCore import QFile
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtWidgets import QApplication
 from importlib.resources import files, as_file
 
+_boot_log("Importing controller...")
 from .controller import Controller
 
 # suppress macOS warnings
@@ -77,15 +135,21 @@ def main(argv=None) -> int:
 #    if hasattr( faulthandler, "register" ):
 #        faulthandler.register(signal.SIGUSR1)  # kill -USR1 <pid> dumps stacks
 
+    _boot_log("Parsing command line arguments...")
     args = _parse_args(argv or sys.argv[1:])
+    _boot_log("Creating QApplication...")
     app = QApplication(sys.argv)
 
     # initiate silent luna
+    _boot_log("Initializing Luna project...")
     proj = lp.proj()
     proj.silence( True )
     
+    _boot_log("Loading UI...")
     ui = _load_ui()
+    _boot_log("Constructing controller...")
     controller = Controller(ui, proj)
+    _boot_log("Showing main window...")
     ui.show()
 
     # optionally, attach a file list (or .edf or .annot):
@@ -154,6 +218,8 @@ def main(argv=None) -> int:
     # run the app
     #
     
+    _boot_log("Startup complete; entering event loop.")
+
     try:
         return app.exec()
     except Exception:

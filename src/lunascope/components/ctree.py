@@ -21,9 +21,20 @@
 
 import lunapi as lp
 
-from PySide6.QtCore import QModelIndex, QItemSelection, QItemSelectionModel
-from PySide6.QtWidgets import QAbstractItemView, QTreeView, QHeaderView
-from PySide6.QtGui import QStandardItemModel, QStandardItem
+from PySide6.QtCore import QModelIndex, QItemSelection, QItemSelectionModel, Qt
+from PySide6.QtGui import QAction, QKeySequence, QShortcut, QStandardItemModel, QStandardItem
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHeaderView,
+    QHBoxLayout,
+    QMenu,
+    QPushButton,
+    QTreeView,
+    QWidget,
+)
+
+
+HELP_TREE_PRIMARY_COL_WIDTH = 160
 
 class CTreeMixin:
 
@@ -48,6 +59,7 @@ class CTreeMixin:
         h = view.header()
         h.setSectionResizeMode(QHeaderView.Interactive)
         h.setStretchLastSection(True)
+        h.setMinimumSectionSize(120)
         
         def add_root(model: QStandardItemModel, name: str, desc="") -> QStandardItem:
             n = QStandardItem(str(name)); n.setEditable(False)
@@ -94,16 +106,146 @@ class CTreeMixin:
         view.setModel(model)              
         view.setUniformRowHeights(True)
         view.setAlternatingRowColors(True)
+        view.setExpandsOnDoubleClick(False)
         view.collapseAll()
-        view.resizeColumnToContents(0)
+        view.setColumnWidth(0, HELP_TREE_PRIMARY_COL_WIDTH)
 
         # set filter
         view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        view.doubleClicked.connect(self._toggle_ctree_index)
+        view.activated.connect(self._toggle_ctree_index)
+        view.setContextMenuPolicy(Qt.CustomContextMenu)
+        view.customContextMenuRequested.connect(self._show_ctree_context_menu)
+
+        controls = QWidget(view.parent())
+        controls.setObjectName("ctree_controls")
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._ctree_expand_branch_btn = QPushButton("Expand branch", controls)
+        self._ctree_collapse_branch_btn = QPushButton("Collapse branch", controls)
+        self._ctree_expand_all_btn = QPushButton("Expand all", controls)
+        self._ctree_collapse_all_btn = QPushButton("Collapse all", controls)
+
+        self._ctree_expand_branch_btn.clicked.connect(self._expand_ctree_branch)
+        self._ctree_collapse_branch_btn.clicked.connect(self._collapse_ctree_branch)
+        self._ctree_expand_all_btn.clicked.connect(view.expandAll)
+        self._ctree_collapse_all_btn.clicked.connect(view.collapseAll)
+
+        for button in (
+            self._ctree_expand_branch_btn,
+            self._ctree_collapse_branch_btn,
+            self._ctree_expand_all_btn,
+            self._ctree_collapse_all_btn,
+        ):
+            controls_layout.addWidget(button)
+        controls_layout.addStretch(1)
+
+        dock_layout = self.ui.dock_help.widget().layout()
+        dock_layout.insertWidget(1, controls)
+        self._init_ctree_shortcuts()
 
         # wire filter
         self.ui.flt_ctree.textChanged.connect(
             lambda txt: expand_and_show_matches(self.ui.tree_helper, txt , partial = True )
         )
+
+    def _init_ctree_shortcuts(self):
+        scope = self.ui.dock_help.widget()
+        shortcuts = (
+            ("Alt+Right", self._expand_ctree_branch),
+            ("Alt+Left", self._collapse_ctree_branch),
+            ("Ctrl+Alt+Right", self.ui.tree_helper.expandAll),
+            ("Ctrl+Alt+Left", self.ui.tree_helper.collapseAll),
+        )
+
+        self._ctree_shortcuts = []
+        for seq, handler in shortcuts:
+            shortcut = QShortcut(QKeySequence(seq), scope)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(handler)
+            self._ctree_shortcuts.append(shortcut)
+
+    def _ctree_selected_roots(self):
+        view = self.ui.tree_helper
+        selection_model = view.selectionModel()
+        if selection_model is None:
+            return []
+
+        indexes = selection_model.selectedRows(0)
+        if not indexes:
+            current = view.currentIndex()
+            if current.isValid():
+                indexes = [current.siblingAtColumn(0)]
+
+        roots = []
+        for index in indexes:
+            index = index.siblingAtColumn(0)
+            if not index.isValid():
+                continue
+            if any(self._ctree_is_ancestor(existing, index) for existing in roots):
+                continue
+            roots = [existing for existing in roots if not self._ctree_is_ancestor(index, existing)]
+            roots.append(index)
+        return roots
+
+    @staticmethod
+    def _ctree_is_ancestor(ancestor, child):
+        parent = child.parent()
+        while parent.isValid():
+            if parent == ancestor:
+                return True
+            parent = parent.parent()
+        return False
+
+    def _toggle_ctree_index(self, index):
+        index = index.siblingAtColumn(0)
+        if not index.isValid() or not self.ui.tree_helper.model().hasChildren(index):
+            return
+        self.ui.tree_helper.setExpanded(index, not self.ui.tree_helper.isExpanded(index))
+
+    def _expand_ctree_branch(self):
+        roots = self._ctree_selected_roots()
+        if not roots:
+            self.ui.tree_helper.expandAll()
+            return
+        for index in roots:
+            self.ui.tree_helper.expandRecursively(index)
+
+    def _collapse_ctree_branch(self):
+        roots = self._ctree_selected_roots()
+        if not roots:
+            self.ui.tree_helper.collapseAll()
+            return
+        for index in roots:
+            self.ui.tree_helper.collapse(index)
+            self._collapse_ctree_children(index)
+
+    def _collapse_ctree_children(self, parent):
+        model = self.ui.tree_helper.model()
+        for row in range(model.rowCount(parent)):
+            child = model.index(row, 0, parent)
+            self.ui.tree_helper.collapse(child)
+            self._collapse_ctree_children(child)
+
+    def _show_ctree_context_menu(self, pos):
+        menu = QMenu(self.ui.tree_helper)
+        expand_branch = QAction("Expand branch", menu)
+        collapse_branch = QAction("Collapse branch", menu)
+        expand_all = QAction("Expand all", menu)
+        collapse_all = QAction("Collapse all", menu)
+
+        expand_branch.triggered.connect(self._expand_ctree_branch)
+        collapse_branch.triggered.connect(self._collapse_ctree_branch)
+        expand_all.triggered.connect(self.ui.tree_helper.expandAll)
+        collapse_all.triggered.connect(self.ui.tree_helper.collapseAll)
+
+        menu.addAction(expand_branch)
+        menu.addAction(collapse_branch)
+        menu.addSeparator()
+        menu.addAction(expand_all)
+        menu.addAction(collapse_all)
+        menu.exec(self.ui.tree_helper.viewport().mapToGlobal(pos))
             
 
 def expand_and_show_matches(view, needle: str, partial=True, case_insensitive=True):

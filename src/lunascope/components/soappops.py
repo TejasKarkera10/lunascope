@@ -26,9 +26,6 @@ import os
 from pathlib import Path
 import pandas as pd
 
-from .mplcanvas import MplCanvas
-from .plts import hypno_density, hypno
-
 
 class MultiSelectComboBox(QComboBox):
     """QComboBox with checkable items and persistent popup for multi-select."""
@@ -104,6 +101,42 @@ def _replace_with_multiselect(combo: QComboBox) -> MultiSelectComboBox:
         
 class SoapPopsMixin:
 
+    def _ensure_soap_canvas(self):
+        if getattr(self, "soapcanvas", None) is not None:
+            return self.soapcanvas
+
+        layout = self.ui.host_soap.layout()
+        if layout is None:
+            layout = QVBoxLayout()
+            self.ui.host_soap.setLayout(layout)
+        layout.setContentsMargins(0,0,0,0)
+
+        from .mplcanvas import MplCanvas
+        from ..app import _boot_log
+
+        _boot_log("Creating Matplotlib canvas for SOAP pane...")
+        self.soapcanvas = MplCanvas(self.ui.host_soap)
+        layout.addWidget(self.soapcanvas)
+        return self.soapcanvas
+
+    def _ensure_pops_canvas(self):
+        if getattr(self, "popscanvas", None) is not None:
+            return self.popscanvas
+
+        layout = self.ui.host_pops.layout()
+        if layout is None:
+            layout = QVBoxLayout()
+            self.ui.host_pops.setLayout(layout)
+        layout.setContentsMargins(0,0,0,0)
+
+        from .mplcanvas import MplCanvas
+        from ..app import _boot_log
+
+        _boot_log("Creating Matplotlib canvas for POPS pane...")
+        self.popscanvas = MplCanvas(self.ui.host_pops)
+        layout.addWidget(self.popscanvas)
+        return self.popscanvas
+
 
     # valid staging:
     #   - EDF/annotations attached
@@ -153,18 +186,14 @@ class SoapPopsMixin:
 
     
     def _init_soap_pops(self):
-
-        # SOAP hypnodensity plot
-        self.ui.host_soap.setLayout(QVBoxLayout())
-        self.soapcanvas = MplCanvas(self.ui.host_soap)
+        self.soapcanvas = None
+        self.popscanvas = None
+        if self.ui.host_soap.layout() is None:
+            self.ui.host_soap.setLayout(QVBoxLayout())
         self.ui.host_soap.layout().setContentsMargins(0,0,0,0)
-        self.ui.host_soap.layout().addWidget( self.soapcanvas )
-        
-        # POPS hypnodensity plot
-        self.ui.host_pops.setLayout(QVBoxLayout())
-        self.popscanvas = MplCanvas(self.ui.host_pops)
+        if self.ui.host_pops.layout() is None:
+            self.ui.host_pops.setLayout(QVBoxLayout())
         self.ui.host_pops.layout().setContentsMargins(0,0,0,0)
-        self.ui.host_pops.layout().addWidget( self.popscanvas )
 
         # POPS resources
         pops_path = self.ui.txt_pops_path.text()
@@ -219,6 +248,7 @@ class SoapPopsMixin:
     # Run SOAP
 
     def _calc_soap(self):
+        self._ensure_soap_canvas()
 
         # requires attached individal
         if not hasattr(self, "p"):
@@ -269,7 +299,8 @@ class SoapPopsMixin:
         
         # hypnodensities
         df = self.p.table( 'SOAP' , 'CH_E' )
-        df = df[ [ 'PRIOR', 'PRED' , 'PP_N1' , 'PP_N2', 'PP_N3', 'PP_R', 'PP_W' , 'DISC' ] ]                                                     
+        df = df[ [ 'PRIOR', 'PRED' , 'PP_N1' , 'PP_N2', 'PP_N3', 'PP_R', 'PP_W' , 'DISC' ] ]
+        from .plts import hypno_density
         hypno_density( df , ax=self.soapcanvas.ax)                                                                                               
         self.soapcanvas.draw_idle()                                                                                                              
                
@@ -384,6 +415,8 @@ class SoapPopsMixin:
     def _render_pops_hypno(self):
 
         if hasattr(self, 'pops_df') and isinstance(self.pops_df, pd.DataFrame) and not self.pops_df.empty:
+            self._ensure_pops_canvas()
+            from .plts import hypno_density, hypno
 
             # either draw hypnodensity or hypnogram
             if self.ui.radio_pops_hypnodens.isChecked():

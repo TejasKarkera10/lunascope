@@ -19,8 +19,12 @@
 #
 #  --------------------------------------------------------------------
 
+import sys
+
+sys.stderr.write("[lunascope] Initiating startup...\n")
+sys.stderr.flush()
+
 from .app import main
 
 if __name__ == "__main__":
     main()
-

@@ -161,8 +161,7 @@ def add_dock_shortcuts(win, view_menu):
     act_show_all.setShortcut("Ctrl+0")
     
     def toggle_all():
-        # get all docks except Commands
-        docks = [ d for d in win.findChildren(QDockWidget) if d.objectName() != "dock_help" ]
+        docks = win.findChildren(QDockWidget)
         all_hidden = all(not d.isVisible() for d in docks)
         for d in docks:
             d.setVisible(all_hidden)
@@ -193,8 +192,8 @@ def add_dock_shortcuts(win, view_menu):
             act.setShortcut("Ctrl+9")
         elif act.text() == "(-) Masks":
             act.setShortcut("Ctrl+-")
-#        elif act.text() == "(/) Commands":
-#            act.setShortcut("Ctrl+/")
+        elif act.text() == "(/) Commands":
+            act.setShortcut("Ctrl+/")
 
     return act_show_all
 

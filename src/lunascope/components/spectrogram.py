@@ -24,37 +24,51 @@ import lunapi as lp
 import io
 import numpy as np
 
-from PySide6.QtWidgets import QVBoxLayout
+from PySide6.QtWidgets import QVBoxLayout, QMessageBox
 from PySide6 import QtCore, QtWidgets, QtGui
 
 from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtCore import QMetaObject, Q_ARG, Qt, Slot
 
-from .mplcanvas import MplCanvas
-from .plts import plot_hjorth, plot_spec
-
 class SpecMixin:
+
+    def _ensure_spectrogram_canvas(self, *_args):
+        if getattr(self, "spectrogramcanvas", None) is not None:
+            return self.spectrogramcanvas
+
+        layout = self.ui.host_spectrogram.layout()
+        if layout is None:
+            layout = QVBoxLayout()
+            self.ui.host_spectrogram.setLayout(layout)
+        layout.setContentsMargins(0,0,0,0)
+
+        from .mplcanvas import MplCanvas
+        from ..app import _boot_log
+
+        _boot_log("Creating Matplotlib canvas for spectrogram pane...")
+        self.spectrogramcanvas = MplCanvas(self.ui.host_spectrogram)
+        layout.addWidget(self.spectrogramcanvas)
+        self.spectrogramcanvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.spectrogramcanvas.customContextMenuRequested.connect(self._spec_context_menu)
+        return self.spectrogramcanvas
 
     def _init_spec(self):
 
-        self.ui.host_spectrogram.setLayout(QVBoxLayout())
-        self.spectrogramcanvas = MplCanvas(self.ui.host_spectrogram)
+        self.spectrogramcanvas = None
+        if self.ui.host_spectrogram.layout() is None:
+            self.ui.host_spectrogram.setLayout(QVBoxLayout())
         self.ui.host_spectrogram.layout().setContentsMargins(0,0,0,0)
-        self.ui.host_spectrogram.layout().addWidget( self.spectrogramcanvas )
 
         # wiring
         self.ui.butt_spectrogram.clicked.connect( self._calc_spectrogram )
         self.ui.butt_hjorth.clicked.connect( self._calc_hjorth )
-
-        # context menu
-        self.spectrogramcanvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.spectrogramcanvas.customContextMenuRequested.connect(self._spec_context_menu)
 
 
     # ------------------------------------------------------------    
     # right-click menus to save/copy images
 
     def _spec_context_menu(self, pos):
+        self._ensure_spectrogram_canvas()
         menu = QtWidgets.QMenu(self.spectrogramcanvas)
         act_copy = menu.addAction("Copy to Clipboard")
         act_save = menu.addAction("Save Figure…")
@@ -65,12 +79,14 @@ class SpecMixin:
             self._spec_save_figure()
             
     def _spec_copy_to_clipboard(self):
+        self._ensure_spectrogram_canvas()
         buf = io.BytesIO()
         self.spectrogramcanvas.figure.savefig(buf, format="png", bbox_inches="tight")
         img = QtGui.QImage.fromData(buf.getvalue(), "PNG")
         QtWidgets.QApplication.clipboard().setImage(img)
         
     def _spec_save_figure(self):
+        self._ensure_spectrogram_canvas()
         fn, _ = QtWidgets.QFileDialog.getSaveFileName(
             self.spectrogramcanvas,
             "Save Figure",
@@ -104,6 +120,7 @@ class SpecMixin:
     # Caclculate a spectrogram
     
     def _calc_spectrogram(self):
+        self._ensure_spectrogram_canvas()
 
         # requires attached individal
         if not hasattr(self, "p"):
@@ -261,11 +278,12 @@ class SpecMixin:
 
 
     def _complete_spectrogram(self,xi,yi,zi):
+        self._ensure_spectrogram_canvas()
         # we can now touch the GUI
         ch = self.ui.combo_spectrogram.currentText()
         minf = self.ui.spin_lwrfrq.value() 
         maxf = self.ui.spin_uprfrq.value()
-                
+        from .plts import plot_spec
         plot_spec( xi,yi,zi, ch, minf, maxf, ax=self.spectrogramcanvas.ax , gui = self.ui )
         if hasattr(self, "ns") and self.ns is not None and self.ns > 0:
             self.spectrogramcanvas.ax.set_xlim(0, float(self.ns))
@@ -278,6 +296,7 @@ class SpecMixin:
     # Caclculate a Hjorth plot        
 
     def _calc_hjorth(self):
+        self._ensure_spectrogram_canvas()
         
         # requires attached individal
         if not hasattr(self, "p"):
@@ -298,6 +317,7 @@ class SpecMixin:
             return
 
         # do plot
+        from .plts import plot_hjorth
         plot_hjorth( ch , ax=self.spectrogramcanvas.ax , p = self.p , gui = self.ui )
         if hasattr(self, "ns") and self.ns is not None and self.ns > 0:
             self.spectrogramcanvas.ax.set_xlim(0, float(self.ns))

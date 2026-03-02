@@ -23,17 +23,32 @@
 from PySide6.QtWidgets import QVBoxLayout, QHeaderView, QMessageBox
 from PySide6.QtCore import Qt
 
-from .mplcanvas import MplCanvas
-from .plts import hypno
-
 class HypnoMixin:
+
+    def _ensure_hypno_canvas(self, *_args):
+        if getattr(self, "hypnocanvas", None) is not None:
+            return self.hypnocanvas
+
+        layout = self.ui.host_hypnogram.layout()
+        if layout is None:
+            layout = QVBoxLayout()
+            self.ui.host_hypnogram.setLayout(layout)
+        layout.setContentsMargins(0,0,0,0)
+
+        from .mplcanvas import MplCanvas
+        from ..app import _boot_log
+
+        _boot_log("Creating Matplotlib canvas for hypnogram pane...")
+        self.hypnocanvas = MplCanvas(self.ui.host_hypnogram)
+        layout.addWidget(self.hypnocanvas)
+        return self.hypnocanvas
 
     def _init_hypno(self):
 
-        self.ui.host_hypnogram.setLayout(QVBoxLayout())
-        self.hypnocanvas = MplCanvas(self.ui.host_hypnogram)
+        self.hypnocanvas = None
+        if self.ui.host_hypnogram.layout() is None:
+            self.ui.host_hypnogram.setLayout(QVBoxLayout())
         self.ui.host_hypnogram.layout().setContentsMargins(0,0,0,0)
-        self.ui.host_hypnogram.layout().addWidget( self.hypnocanvas )
 
         # wiring
         self.ui.butt_calc_hypnostats.clicked.connect( self._calc_hypnostats )
@@ -42,6 +57,7 @@ class HypnoMixin:
     # Run hypnostats
 
     def _calc_hypnostats(self):
+        self._ensure_hypno_canvas()
 
         # clear items first
         self.hypnocanvas.ax.cla()
@@ -60,6 +76,7 @@ class HypnoMixin:
         
         # make hypnogram
         ss = self.p.stages()
+        from .plts import hypno
         hypno(ss.STAGE, ax=self.hypnocanvas.ax)
         self.hypnocanvas.draw_idle()
         

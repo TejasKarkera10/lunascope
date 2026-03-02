@@ -152,7 +152,7 @@ class Controller( QObject, CMapsMixin,
         self.ui.menuView.addAction(self.ui.dock_console.toggleViewAction())
         self.ui.menuView.addAction(self.ui.dock_outputs.toggleViewAction())
         self.ui.menuView.addSeparator()
-#        self.ui.menuView.addAction(self.ui.dock_help.toggleViewAction())
+        self.ui.menuView.addAction(self.ui.dock_help.toggleViewAction())
 
         # set up menu: about
         act_about = QAction("Help", self)
@@ -491,17 +491,21 @@ class Controller( QObject, CMapsMixin,
         if not getattr(self, "project_mode", False):
             self.ui.txt_out.clear()
         
-        self.spectrogramcanvas.ax.cla()
-        self.spectrogramcanvas.figure.canvas.draw_idle()
+        if getattr(self, "spectrogramcanvas", None) is not None:
+            self.spectrogramcanvas.ax.cla()
+            self.spectrogramcanvas.figure.canvas.draw_idle()
 
-        self.hypnocanvas.ax.cla()
-        self.hypnocanvas.figure.canvas.draw_idle()
+        if getattr(self, "hypnocanvas", None) is not None:
+            self.hypnocanvas.ax.cla()
+            self.hypnocanvas.figure.canvas.draw_idle()
 
-        self.soapcanvas.ax.cla()
-        self.soapcanvas.figure.canvas.draw_idle()
+        if getattr(self, "soapcanvas", None) is not None:
+            self.soapcanvas.ax.cla()
+            self.soapcanvas.figure.canvas.draw_idle()
 
-        self.popscanvas.ax.cla()
-        self.popscanvas.figure.canvas.draw_idle()
+        if getattr(self, "popscanvas", None) is not None:
+            self.popscanvas.ax.cla()
+            self.popscanvas.figure.canvas.draw_idle()
 
         # POPS results
         self.pops_df = pd.DataFrame()
