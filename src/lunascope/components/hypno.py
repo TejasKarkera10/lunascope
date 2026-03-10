@@ -36,9 +36,6 @@ class HypnoMixin:
         layout.setContentsMargins(0,0,0,0)
 
         from .mplcanvas import MplCanvas
-        from ..app import _boot_log
-
-        _boot_log("Creating Matplotlib canvas for hypnogram pane...")
         self.hypnocanvas = MplCanvas(self.ui.host_hypnogram)
         layout.addWidget(self.hypnocanvas)
         return self.hypnocanvas

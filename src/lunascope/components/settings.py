@@ -26,6 +26,20 @@ from PySide6.QtWidgets import QMessageBox
 
 import pandas as pd
 
+
+def _append_selected_extension(filename: str, selected_filter: str, allowed_exts: tuple[str, ...]) -> str:
+    lower = filename.lower()
+    if any(lower.endswith(ext) for ext in allowed_exts):
+        return filename
+
+    filt = (selected_filter or "").lower()
+    for ext in allowed_exts:
+        if f"*{ext}" in filt:
+            return filename + ext
+
+    return filename + allowed_exts[0]
+
+
 class SettingsMixin:
 
     def _init_settings(self):
@@ -67,7 +81,7 @@ class SettingsMixin:
                 self.ui,
                 "Open a config file",
                 "",
-                "Text (*.txt *.cfg);;All Files (*)",
+                "Config Files (*.txt *.cfg *);;All Files (*)",
                 options=QFileDialog.Option.DontUseNativeDialog
             )
             
@@ -109,23 +123,24 @@ class SettingsMixin:
                 self.ui,
                 "Save file to .cfg",
                 "",
-                "Config (text) Files (*.cfg *.txt);;All Files (*)",
+                "Config Files (*.txt *.cfg *);;All Files (*)",
                 options=QFileDialog.Option.DontUseNativeDialog
             )            
         else:
             new_file = self.ui.txt_param.toPlainText()            
             filename, selected_filter = QFileDialog.getSaveFileName(
                 self.ui,
-                "Save file to .txt",
+                "Save file to .par/.txt",
                 "",
-                "Text Files (*.txt);;All Files (*)",
+                "Param Files (*.txt *.par *);;All Files (*)",
                 options=QFileDialog.Option.DontUseNativeDialog
             )
 
         if filename:
-            # Ensure .txt extension if none was given
-            if selected_filter.startswith("Text") and not filename.lower().endswith(".txt"):
-                filename += ".txt"
+            if is_cmap:
+                filename = _append_selected_extension(filename, selected_filter, (".txt", ".cfg"))
+            else:
+                filename = _append_selected_extension(filename, selected_filter, (".txt", ".par"))
                 
             with open(filename, "w", encoding="utf-8") as f:
                 f.write(new_file)

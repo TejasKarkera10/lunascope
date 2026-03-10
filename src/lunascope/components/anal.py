@@ -41,6 +41,19 @@ from PySide6.QtGui import QKeySequence, QGuiApplication, QShortcut
 from PySide6.QtGui import QAction
 
 
+def _append_selected_extension(filename: str, selected_filter: str, allowed_exts: tuple[str, ...]) -> str:
+    lower = filename.lower()
+    if any(lower.endswith(ext) for ext in allowed_exts):
+        return filename
+
+    filt = (selected_filter or "").lower()
+    for ext in allowed_exts:
+        if f"*{ext}" in filt:
+            return filename + ext
+
+    return filename + allowed_exts[0]
+
+
 
 class AnalMixin:
 
@@ -227,12 +240,13 @@ class AnalMixin:
                 self._proj_eval_next()
 
     def _buttons( self, status ):
+        stage_tools_enabled = status and not getattr(self, 'multiday_mode', False)
         self.ui.butt_anal_exec.setEnabled(status)
         self.ui.butt_spectrogram.setEnabled(status)
         self.ui.butt_hjorth.setEnabled(status)
-        self.ui.butt_calc_hypnostats.setEnabled(status)
-        self.ui.butt_soap.setEnabled(status)
-        self.ui.butt_pops.setEnabled(status)
+        self.ui.butt_calc_hypnostats.setEnabled(stage_tools_enabled)
+        self.ui.butt_soap.setEnabled(stage_tools_enabled)
+        self.ui.butt_pops.setEnabled(stage_tools_enabled)
         self.ui.butt_render.setEnabled(status)
         self.ui.butt_refresh.setEnabled(status)
         self.ui.butt_load_slist.setEnabled(status)
@@ -337,7 +351,7 @@ class AnalMixin:
             self.ui,
             "Open Luna script",
             "",
-            "Text (*.txt *.cmd);;All Files (*)",
+            "Luna Scripts (*.txt *.cmd *);;All Files (*)",
             options=QFileDialog.Option.DontUseNativeDialog
         )
         if txt_file:
@@ -360,17 +374,15 @@ class AnalMixin:
         new_file = self.ui.txt_inp.toPlainText()
 
         filename, selected_filter = QFileDialog.getSaveFileName(
-            self,
+            self.ui,
             "Save Luna Script",
             "",
-            "Text Files (*.txt *.param);;All Files (*)",
+            "Luna Scripts (*.txt *.cmd *);;All Files (*)",
             options=QFileDialog.Option.DontUseNativeDialog
         )
 
         if filename:
-            # Ensure .txt extension if none was given
-            if selected_filter.startswith("Text") and not filename.lower().endswith(".txt"):
-                filename += ".txt"
+            filename = _append_selected_extension(filename, selected_filter, (".txt", ".cmd"))
                 
             with open(filename, "w", encoding="utf-8") as f:
                 f.write(new_file)

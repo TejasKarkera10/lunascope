@@ -1,15 +1,11 @@
 import sys
-import time
 import tempfile
 from pathlib import Path
 import os
-
-_BOOT_T0 = time.monotonic()
-
+import signal
 
 def _boot_log(message: str) -> None:
-    elapsed = time.monotonic() - _BOOT_T0
-    sys.stderr.write(f"[lunascope +{elapsed:0.2f}s] {message}\n")
+    sys.stderr.write(f"[lunascope] {message}\n")
     sys.stderr.flush()
 
 
@@ -77,19 +73,15 @@ _configure_runtime_cache_dirs()
 
 import argparse
 
-_boot_log("Importing lunapi...")
 import lunapi as lp
 
-_boot_log("Importing pyqtgraph...")
 import pyqtgraph as pg
 
-_boot_log("Importing PySide6...")
-from PySide6.QtCore import QFile
+from PySide6.QtCore import QFile, QTimer
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtWidgets import QApplication
 from importlib.resources import files, as_file
 
-_boot_log("Importing controller...")
 from .controller import Controller
 
 # suppress macOS warnings
@@ -127,6 +119,27 @@ def _parse_args(argv):
     return parse(argv)
 
 
+def _install_signal_handlers(app: QApplication, controller=None) -> None:
+    def _handle_termination(signum, frame):
+        _boot_log(f"Received signal {signum}; shutting down.")
+        if controller is not None and getattr(controller, "_busy", False):
+            _boot_log("Waiting for background work to finish...")
+        app.quit()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, _handle_termination)
+        except (ValueError, OSError, RuntimeError):
+            pass
+
+    # Keep the Python interpreter responsive to signals while Qt owns the main loop.
+    heartbeat = QTimer(app)
+    heartbeat.setInterval(250)
+    heartbeat.timeout.connect(lambda: None)
+    heartbeat.start()
+    app._signal_heartbeat = heartbeat
+
+
 
 def main(argv=None) -> int:
 
@@ -135,20 +148,19 @@ def main(argv=None) -> int:
 #    if hasattr( faulthandler, "register" ):
 #        faulthandler.register(signal.SIGUSR1)  # kill -USR1 <pid> dumps stacks
 
-    _boot_log("Parsing command line arguments...")
     args = _parse_args(argv or sys.argv[1:])
-    _boot_log("Creating QApplication...")
+    _boot_log("Creating application...")
     app = QApplication(sys.argv)
 
     # initiate silent luna
-    _boot_log("Initializing Luna project...")
+    _boot_log("Initializing Luna...")
     proj = lp.proj()
     proj.silence( True )
     
-    _boot_log("Loading UI...")
+    _boot_log("Loading user interface...")
     ui = _load_ui()
-    _boot_log("Constructing controller...")
     controller = Controller(ui, proj)
+    _install_signal_handlers(app, controller)
     _boot_log("Showing main window...")
     ui.show()
 
@@ -185,40 +197,14 @@ def main(argv=None) -> int:
             text = open( args.cmap_file , "r", encoding="utf-8").read()
             controller.ui.txt_cmap.setPlainText(text)
         except (UnicodeDecodeError, OSError) as e:
-            print(f"[Error] Could not load {args.cap_file}: {type(e).__name__}: {e}", file=sys.stderr)
+            print(f"[Error] Could not load {args.cmap_file}: {type(e).__name__}: {e}", file=sys.stderr)
 
-    # [ OLD - this actually set the cols ] optionally pre-load a color map
-    # if args.cmap_file:
-    #     try:
-    #         text = open( args.cmap_file , "r", encoding="utf-8").read()            
-    #         controller.cmap = {}
-    #         controller.cmap_list = [ ]
-    #         for line in text.splitlines():
-    #             line = line.strip()
-    #             if not line or line.startswith("#"):
-    #                 continue
-    #             parts = line.replace("=", " ").replace("\t", " ").split()
-    #             if len(parts) >= 2:
-    #                 controller.cmap[parts[0]] = parts[1]
-    #                 controller.cmap_list.append( parts[0] )
-    #         controller.cmap_rlist = list(reversed(controller.cmap_list))
-    #         controller.palset = 'bespoke'
-
-    #     except (UnicodeDecodeError, OSError) as e:
-    #         print(f"[Error] Could not load {args.cmap_file}: {type(e).__name__}: {e}", file=sys.stderr)
-
-                
-
-
-                
-
-            
 
     #
     # run the app
     #
     
-    _boot_log("Startup complete; entering event loop.")
+    _boot_log("Startup complete.")
 
     try:
         return app.exec()

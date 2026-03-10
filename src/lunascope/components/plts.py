@@ -83,12 +83,12 @@ def spec(ss, e=None, ax=None, *, title=None, xsize=20, ysize=2, clear=True):
 # plot a Hjorthgram
 
 @staticmethod
-def plot_hjorth( ch , ax , p , gui ):
+def plot_hjorth( ch , ax , p , gui , epoch_dur=30 ):
 
     ax.clear()
 
     # get stats
-    res = p.silent_proc_lunascope('EPOCH dur=30 verbose & SIGSTATS epoch sig=' + ch)
+    res = p.silent_proc_lunascope(f'EPOCH dur={epoch_dur} verbose & SIGSTATS epoch sig={ch}')
     df = res.get('SIGSTATS: CH_E')
     dt = res.get('EPOCH: E')
     if df is None or dt is None or len(df) == 0 or len(dt) == 0:
@@ -132,7 +132,7 @@ def plot_hjorth( ch , ax , p , gui ):
     colors3 = colormaps["turbo"](y3)
 
     midy = 0
-    elen = 30
+    elen = epoch_dur
 
     rects_top = [Rectangle((xi, midy), elen, hi) for xi, hi in zip(x, y1)]
     rects_bot = [Rectangle((xi, midy - hi), elen, hi) for xi, hi in zip(x, y1)]

@@ -101,6 +101,49 @@ def _replace_with_multiselect(combo: QComboBox) -> MultiSelectComboBox:
         
 class SoapPopsMixin:
 
+    def _stage_validation_classes(self):
+        if hasattr(self, "_navigator_stage_query_classes"):
+            return self._navigator_stage_query_classes()
+        return ['N1', 'N2', 'N3', 'R', 'S', 'W', '?', 'L']
+
+    def _stage_validation_df(self):
+        try:
+            df = self.p.fetch_annots(self._stage_validation_classes(), 30)
+        except Exception:
+            return pd.DataFrame()
+
+        if not isinstance(df, pd.DataFrame) or df.empty or 'Class' not in df.columns:
+            return pd.DataFrame()
+
+        if hasattr(self, "_filter_navigator_stage_df"):
+            df = self._filter_navigator_stage_df(df, 'Class')
+
+        if df.empty:
+            return pd.DataFrame()
+
+        cols = [c for c in ('Start', 'Stop', 'Class') if c in df.columns]
+        return df[cols].copy()
+
+    def _stage_validation_has_overlap(self, df):
+        if df.empty or 'Start' not in df.columns or 'Stop' not in df.columns:
+            return False
+
+        ordered = df.sort_values(['Start', 'Stop', 'Class'], kind='stable')
+        prev_stop = None
+        for row in ordered.itertuples(index=False):
+            start = float(row.Start)
+            stop = float(row.Stop)
+            if prev_stop is not None and start < prev_stop:
+                return True
+            prev_stop = max(prev_stop, stop) if prev_stop is not None else stop
+        return False
+
+    def _stage_validation_unique_count(self, df):
+        if df.empty or 'Class' not in df.columns:
+            return 0
+        valid = {'N1', 'N2', 'N3', 'R', 'S', 'W'}
+        return int(df.loc[df['Class'].isin(valid), 'Class'].nunique())
+
     def _ensure_soap_canvas(self):
         if getattr(self, "soapcanvas", None) is not None:
             return self.soapcanvas
@@ -112,9 +155,6 @@ class SoapPopsMixin:
         layout.setContentsMargins(0,0,0,0)
 
         from .mplcanvas import MplCanvas
-        from ..app import _boot_log
-
-        _boot_log("Creating Matplotlib canvas for SOAP pane...")
         self.soapcanvas = MplCanvas(self.ui.host_soap)
         layout.addWidget(self.soapcanvas)
         return self.soapcanvas
@@ -130,9 +170,6 @@ class SoapPopsMixin:
         layout.setContentsMargins(0,0,0,0)
 
         from .mplcanvas import MplCanvas
-        from ..app import _boot_log
-
-        _boot_log("Creating Matplotlib canvas for POPS pane...")
         self.popscanvas = MplCanvas(self.ui.host_pops)
         layout.addWidget(self.popscanvas)
         return self.popscanvas
@@ -149,36 +186,14 @@ class SoapPopsMixin:
         if not hasattr(self, "p"):
             return False
 
-        # CONTAINS stages allows for possible conflicting stages
-        try:
-            res = self.p.silent_proc('CONTAINS stages')
-            df = self.p.table( 'CONTAINS' )
-        except Exception:
+        df = self._stage_validation_df()
+        if df.empty:
             return False
 
-            
-        if 'df' in locals() and isinstance(df, pd.DataFrame) and not df.empty:
+        if self._stage_validation_has_overlap(df):
+            return False
 
-            # no staging info
-            if df.at[df.index[0], "STAGES"] != 1:
-                return False
-            
-            # overlapping stage annotations
-            if 'OVERLAP' in df.columns and len(df) == 1 and df.at[df.index[0], 'OVERLAP'] == 1:
-                return False
-
-            # fewer than 2 unique stages
-            if require_multiple:
-                if 'UNIQ_STAGES' in df.columns and len(df) == 1 and df.at[df.index[0], 'UNIQ_STAGES'] < 2:
-                    return False
-
-            # any conflicts (will generate an 'E' table) 
-            df2 = self.p.table( 'CONTAINS' , 'E' )
-            if 'df2' in locals() and isinstance(df2, pd.DataFrame) and not df2.empty:
-                return False
-                
-        else:
-            # some other problem if not getting the df
+        if require_multiple and self._stage_validation_unique_count(df) < 2:
             return False
 
         # if here, we must have good staging

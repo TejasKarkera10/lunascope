@@ -37,6 +37,32 @@ from PySide6.QtCore import QSignalBlocker
 
 class SignalsMixin:
 
+    def _navigator_stage_query_classes(self):
+        # Include both detailed staging and generic sleep/wake aliases.
+        return ['N1', 'N2', 'N3', 'R', 'S', 'W', '?', 'L']
+
+    def _navigator_stage_mode(self, stage_values):
+        vals = set(stage_values)
+        has_detailed = any(s in vals for s in ('N1', 'N2', 'N3', 'R'))
+        has_sw = any(s in vals for s in ('S', 'W'))
+        if has_detailed:
+            return 'detailed'
+        if has_sw:
+            return 'sw'
+        return 'other'
+
+    def _filter_navigator_stage_df(self, df, class_col):
+        if df is None or len(df) == 0:
+            return df
+        mode = self._navigator_stage_mode(df[class_col].tolist())
+        if mode == 'detailed':
+            keep = {'N1', 'N2', 'N3', 'R', 'W', '?', 'L'}
+        elif mode == 'sw':
+            keep = {'S', 'W', '?', 'L'}
+        else:
+            keep = {'W', '?', 'L'}
+        return df[df[class_col].isin(keep)].copy()
+
     def _init_signals(self):
 
         # hypnogram / navigator
@@ -91,6 +117,10 @@ class SignalsMixin:
         
         self.last_x1 = 0
         self.last_x2 = 30
+        self.multiday_mode = False
+        self._record_start_tod_secs = 0
+        self._day_lines_pgh = []
+        self._day_lines_pg1 = []
 
     def _init_line_weight_control(self):
         if getattr(self, "_line_weight_widget", None) is not None:
@@ -167,7 +197,13 @@ class SignalsMixin:
         # number of scope-epochs (i.e. fixed at 0, 30s), and seconds
         self.ne = int( nsecs_clk / scope_epoch_sec )
         self.ns = nsecs_clk
-                
+
+        # multi-day mode: records longer than 36 hours
+        self.multiday_mode = self.ns > 36 * 3600
+
+        # set epoch default for spectrogram/hjorth based on record type
+        self._set_epoch_default(multiday=self.multiday_mode)
+
         # option defaults
         self.show_labels = True
 
@@ -182,6 +218,13 @@ class SignalsMixin:
         start_time = str(df["START_TIME"].iloc[0])
         stop_date = str(df["STOP_DATE"].iloc[0])
         stop_time = str(df["STOP_TIME"].iloc[0])
+
+        # store start-of-day offset (seconds from midnight) for day-boundary math
+        try:
+            _stp = start_time.split(".")
+            self._record_start_tod_secs = int(_stp[0]) * 3600 + int(_stp[1]) * 60 + int(_stp[2])
+        except (IndexError, ValueError):
+            self._record_start_tod_secs = 0
         
         start = start_date + "-" + start_time
         stop = stop_date + "-" + stop_time
@@ -232,23 +275,25 @@ class SignalsMixin:
         h.setYRange(0,1)
 
         # get full, original staging from annotations
-        stgs = [ 'N1' , 'N2' , 'N3' , 'R' , 'W' , '?' , 'L' ] 
+        stgs = self._navigator_stage_query_classes()
 
         stgns = {'N1': 0.13333333333333333,
                  'N2': 0.06666666666666667,
                  'N3': 0.0,
                 'R': 0.2,
+                'S': 0.1,
                 'W': 0.26666666666666666,
                 '?': 0.3333333333333333,
                 'L': 0.4}
 
         stg_evts = self.p.fetch_annots( stgs , 30 )
+        stg_evts = self._filter_navigator_stage_df(stg_evts, 'Class')
         
         if len( stg_evts ) != 0:
             starts = stg_evts[ 'Start' ].to_numpy()
             stops = stg_evts[ 'Stop' ].to_numpy()
-            cols = [ self.stgcols_hex[c] for c in stg_evts['Class'].tolist() ]
-            ys = [ stgns[c] for c in stg_evts['Class'].tolist() ]
+            cols = [self.stgcols_hex.get(c, self.stgcols_hex['?']) for c in stg_evts['Class'].tolist()]
+            ys = [stgns.get(c, stgns['?']) for c in stg_evts['Class'].tolist()]
 
             # ensure we'll see
             starts, stops = _ensure_min_px_width( vb, starts, stops, px=1)  # 1-px minimum
@@ -286,11 +331,15 @@ class SignalsMixin:
                 pass
             self.sel = None
         
+        if self.multiday_mode:
+            _click_span, _min_span, _step, _big_step = 3600.0, 60.0, 3600, 86400
+        else:
+            _click_span, _min_span, _step, _big_step = 30.0, 1.0, 30, 300
         self.sel = XRangeSelector(h, bounds=(0, self.ns),
                              integer=True,
-                             click_span=30.0,
-                             min_span=1.0,
-                             step=30, big_step=300 )
+                             click_span=_click_span,
+                             min_span=_min_span,
+                             step=_step, big_step=_big_step)
         
         self.sel.rangeSelected.connect(self.on_window_range)  
         
@@ -299,11 +348,36 @@ class SignalsMixin:
         self.tb0 = TextBatch( vb, QtGui.QFont("Arial", 12), color=(180,255,255), mode='device')
         self.tb0.setZValue(10)
         tks = self.ssa.get_hour_ticks()
+        if self.multiday_mode:
+            if self.ns > 14 * 86400:
+                stride_h = 24
+            elif self.ns > 4 * 86400:
+                stride_h = 12
+            else:
+                stride_h = 6
+            stride_s = stride_h * 3600
+            tks = {k: v for k, v in tks.items()
+                   if (self._record_start_tod_secs + k) % stride_s == 0}
         tx = list( tks.keys() )
         tv = list( tks.values() )
         tv = [v[:-6] if v.endswith(":00:00") else v for v in tv]  # reduce to | hh
         self.tb0.setData(tx, [ 0.99 ] * len( tx ) , tv )
         self.ui.pgh.addItem(self.tb0 , ignoreBounds=True)
+
+        # day boundary lines on navigator (multi-day mode only)
+        self._day_lines_pgh = []
+        if self.multiday_mode:
+            for _t in self._compute_day_boundaries():
+                _line = pg.InfiniteLine(pos=_t, angle=90,
+                    pen=pg.mkPen((255, 255, 180, 80), width=1,
+                                 style=QtCore.Qt.DashLine))
+                pi.addItem(_line)
+                self._day_lines_pgh.append(_line)
+
+        # disable staging-dependent features in multi-day mode
+        self.ui.butt_calc_hypnostats.setEnabled(not self.multiday_mode)
+        self.ui.butt_soap.setEnabled(not self.multiday_mode)
+        self.ui.butt_pops.setEnabled(not self.multiday_mode)
 
         
     # --------------------------------------------------------------------------------
@@ -323,57 +397,60 @@ class SignalsMixin:
         
         # hypnogram vesion 2
         # get staging (in units no larger than 30 seconds)
-        stgs = [ 'N1' , 'N2' , 'N3' , 'R' , 'W' , '?' , 'L' ] 
+        stgs = self._navigator_stage_query_classes()
         stg_evts = self.p.fetch_annots( stgs , 30 )
-
-        # check staging for problems
-
-        has_staging = self._has_staging( False ) # F = do not require >1 stage
-
-#        print( 'has staging' , has_staging )
-#        if not has_staging:
-#            print( 'no staging??')
-#            return 
+        stg_evts = self._filter_navigator_stage_df(stg_evts, 'Class')
                 
         # get staging (in units no larger than 30 seconds)
         # use STAGES here so that we only get the unmasked datapoints
 
-        try:
-            res = self.p.silent_proc( 'EPOCH align verbose & STAGE' )
-        except (RuntimeError) as e:
-            QMessageBox.critical(
-                self.ui,
-                "Error running STAGE: checking for overlapping staging annotations",
-                "Problem with annotations: check for overlapping stage annotations"
-            )
-            return
-        
-        if "EPOCH: E" in res:
-            df1 = self.p.table( 'EPOCH' , 'E' )
-            df1 = df1[ ['E' , 'START' , 'STOP' ] ] 
+        mode = self._navigator_stage_mode(stg_evts['Class'].tolist()) if len(stg_evts) else 'other'
+        if mode == 'sw':
+            # Generic S/W mode: draw directly from annotations, no STAGE call needed.
+            df = stg_evts[['Start', 'Stop', 'Class']].copy()
+            df.rename(columns={'Start': 'START', 'Stop': 'STOP', 'Class': 'OSTAGE'}, inplace=True)
         else:
-            df1 = None
-            df1 = pd.DataFrame( columns = [ "E", "OSTAGE" ] )
-      
-        # if no valid staging, will not have any 'STAGE' output
-        tbls = self.p.strata()
-        has_staging = (tbls["Command"] == "STAGE").any()
-        if has_staging:
-            df2 = self.p.table( 'STAGE' , 'E' )
-            df2 = df2[ ['E' , 'OSTAGE' ] ]
-        else:
-            df2 = pd.DataFrame({
-                "E": df1["E"],
-                "OSTAGE": "?"
-            })
+            try:
+                res = self.p.silent_proc( 'EPOCH align verbose & STAGE' )
+            except RuntimeError:
+                if len(stg_evts) != 0:
+                    # Fallback: if STAGE fails, still render available annotations.
+                    df = stg_evts[['Start', 'Stop', 'Class']].copy()
+                    df.rename(columns={'Start': 'START', 'Stop': 'STOP', 'Class': 'OSTAGE'}, inplace=True)
+                else:
+                    QMessageBox.critical(
+                        self.ui,
+                        "Error running STAGE: checking for overlapping staging annotations",
+                        "Problem with annotations: check for overlapping stage annotations"
+                    )
+                    return
+            else:
+                if "EPOCH: E" in res:
+                    df1 = self.p.table( 'EPOCH' , 'E' )
+                    df1 = df1[ ['E' , 'START' , 'STOP' ] ]
+                else:
+                    df1 = pd.DataFrame( columns = [ "E", "OSTAGE" ] )
 
-        # merge
-        df = pd.merge(df1, df2, on="E", how="inner")
+                # if no valid staging, will not have any 'STAGE' output
+                tbls = self.p.strata()
+                has_staging = (tbls["Command"] == "STAGE").any()
+                if has_staging:
+                    df2 = self.p.table( 'STAGE' , 'E' )
+                    df2 = df2[ ['E' , 'OSTAGE' ] ]
+                else:
+                    df2 = pd.DataFrame({
+                        "E": df1["E"],
+                        "OSTAGE": "?"
+                    })
+                # merge
+                df = pd.merge(df1, df2, on="E", how="inner")
+
+        df = self._filter_navigator_stage_df(df, 'OSTAGE')
 
         if len( df ) != 0:
             starts = df[ 'START' ].to_numpy()
             stops = df[ 'STOP' ].to_numpy()
-            cols = [ self.stgcols_hex[c] for c in df['OSTAGE'].tolist() ]
+            cols = [self.stgcols_hex.get(c, self.stgcols_hex['?']) for c in df['OSTAGE'].tolist()]
 
             # ensure we'll see
             starts, stops = _ensure_min_px_width( vb, starts, stops, px=1)  # 1-px minimum
@@ -600,9 +677,9 @@ class SignalsMixin:
             t1 = self.ss.get_window_left_hms()
             t2 = self.ss.get_window_right_hms()
         else: # annot only segsrv
-            # In non-render mode with signals selected, cap at 30s without drift.
+            # In non-render mode with signals selected, cap window to avoid overload.
             chs = self.ui.tbl_desc_signals.checked()
-            max_simple_span = 30.0
+            max_simple_span = 3600.0 if getattr(self, 'multiday_mode', False) else 30.0
             if len(chs) != 0 and (hi - lo) > max_simple_span:
                 prev_lo = getattr(self, "last_x1", None)
                 prev_hi = getattr(self, "last_x2", None)
@@ -627,9 +704,10 @@ class SignalsMixin:
             t2 = self.ssa.get_window_right_hms()
 
         self.ui.lbl_twin.setText( f"T: {t1} - {t2}" )
-        lo = int(lo/30)+1
-        hi = int(hi/30)+1
-        self.ui.lbl_ewin.setText( f"E: {lo} - {hi}" )
+        if getattr(self, 'multiday_mode', False):
+            self.ui.lbl_ewin.setText(f"Day: {int(lo/86400)+1} - {int(hi/86400)+1}")
+        else:
+            self.ui.lbl_ewin.setText(f"E: {int(lo/30)+1} - {int(hi/30)+1}")
         self._update_pg1()
 
 
@@ -820,6 +898,16 @@ class SignalsMixin:
         self.labs.setZValue(10)
         self.labs.setData([ ], [ ], [ ])
         self.ui.pg1.addItem(self.labs)# , ignoreBounds=True)
+
+        # day boundary lines on main signal canvas (multi-day mode only)
+        self._day_lines_pg1 = []
+        if getattr(self, 'multiday_mode', False):
+            for _t in self._compute_day_boundaries():
+                _line = pg.InfiniteLine(pos=_t, angle=90,
+                    pen=pg.mkPen((255, 255, 180, 50), width=1,
+                                 style=QtCore.Qt.DashLine))
+                pi.addItem(_line)
+                self._day_lines_pg1.append(_line)
         
 
     # --------------------------------------------------------------------------------
@@ -1109,7 +1197,7 @@ class SignalsMixin:
         # clock-ticks                                                                                                          
         tx1 = self.ss.get_window_left()
         tx2 = self.ss.get_window_right()
-        tks = self.ss.get_clock_ticks(6) 
+        tks = self.ss.get_clock_ticks(6, multiday=self.multiday_mode)
         tx = list( tks.keys() )
         tv = list( tks.values() )
         ty = [ 0.99 ] * len( tx )
@@ -1127,8 +1215,19 @@ class SignalsMixin:
         if d < 60: return str(int(d))+'s'
         d = d/60
         if d < 60: return str(int(d))+'m'
-        d = d/60 
+        d = d/60
         return format(d, ".1f")+'h'
+
+    def _compute_day_boundaries(self):
+        """Return list of seconds-from-record-start for each day anchor boundary."""
+        anchor_secs = getattr(self, 'cfg_day_anchor', 12) * 3600
+        start_tod   = getattr(self, '_record_start_tod_secs', 0)
+        secs_to_first = (anchor_secs - start_tod) % 86400
+        boundaries, t = [], secs_to_first
+        while t < self.ns:
+            boundaries.append(t)
+            t += 86400
+        return boundaries
     
     # --------------------------------------------------------------------------------
     #
@@ -1272,7 +1371,7 @@ class SignalsMixin:
         # clock-ticks
         x1 = self.ssa.get_window_left()
         x2 = self.ssa.get_window_right()
-        tks = self.ssa.get_clock_ticks(6)
+        tks = self.ssa.get_clock_ticks(6, multiday=self.multiday_mode)
         tx = list( tks.keys() )
         tv = list( tks.values() )
         ty = [ 0.99 ] * len( tx )

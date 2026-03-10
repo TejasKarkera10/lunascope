@@ -43,14 +43,27 @@ class SpecMixin:
         layout.setContentsMargins(0,0,0,0)
 
         from .mplcanvas import MplCanvas
-        from ..app import _boot_log
-
-        _boot_log("Creating Matplotlib canvas for spectrogram pane...")
         self.spectrogramcanvas = MplCanvas(self.ui.host_spectrogram)
         layout.addWidget(self.spectrogramcanvas)
         self.spectrogramcanvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.spectrogramcanvas.customContextMenuRequested.connect(self._spec_context_menu)
         return self.spectrogramcanvas
+
+    # Epoch durations (seconds) offered in the combo, in display order.
+    _EPOCH_STEPS = [
+        (5,    "5 s"),
+        (10,   "10 s"),
+        (15,   "15 s"),
+        (20,   "20 s"),
+        (30,   "30 s"),
+        (60,   "1 min"),
+        (120,  "2 min"),
+        (300,  "5 min"),
+        (600,  "10 min"),
+        (900,  "15 min"),
+        (1800, "30 min"),
+        (3600, "60 min"),
+    ]
 
     def _init_spec(self):
 
@@ -59,9 +72,68 @@ class SpecMixin:
             self.ui.host_spectrogram.setLayout(QVBoxLayout())
         self.ui.host_spectrogram.layout().setContentsMargins(0,0,0,0)
 
+        # populate epoch combo
+        for secs, label in self._EPOCH_STEPS:
+            self.ui.combo_epoch.addItem(label, secs)
+        self._set_epoch_default(multiday=False)
+
         # wiring
         self.ui.butt_spectrogram.clicked.connect( self._calc_spectrogram )
         self.ui.butt_hjorth.clicked.connect( self._calc_hjorth )
+        self.ui.combo_spectrogram.currentIndexChanged.connect( self._on_spec_channel_changed )
+        self.ui.combo_epoch.currentIndexChanged.connect( self._on_spec_channel_changed )
+
+    def _set_epoch_default(self, multiday: bool):
+        target = 1800 if multiday else 30
+        for i in range(self.ui.combo_epoch.count()):
+            if self.ui.combo_epoch.itemData(i) == target:
+                self.ui.combo_epoch.setCurrentIndex(i)
+                return
+
+    def _get_epoch_dur(self) -> int:
+        v = self.ui.combo_epoch.currentData()
+        return int(v) if v else 30
+
+    def _on_spec_channel_changed(self, *_):
+        """Auto-set frequency spin boxes to sensible limits for the selected channel's SR."""
+        if not hasattr(self, 'p'):
+            return
+        ch = self.ui.combo_spectrogram.currentText()
+        if not ch:
+            return
+        df = self.p.headers()
+        if df is None:
+            return
+        row = df.loc[df['CH'] == ch]
+        if row.empty:
+            return
+        sr = float(row['SR'].iloc[0])
+        nyquist = sr / 2.0
+
+        # For normal-SR channels keep standard EEG defaults (0.5 / 20 Hz).
+        # Only auto-derive limits for low-SR signals (actigraphy etc.) where the
+        # freq range is completely different and the defaults are meaningless.
+        if sr >= 1.0:
+            for spin in (self.ui.spin_lwrfrq, self.ui.spin_uprfrq):
+                spin.setDecimals(2)
+                spin.setMinimum(0.0)
+                spin.setMaximum(nyquist)
+            self.ui.spin_lwrfrq.setSingleStep(0.5)
+            self.ui.spin_lwrfrq.setValue(0.5)
+            self.ui.spin_uprfrq.setSingleStep(1.0)
+            self.ui.spin_uprfrq.setValue(min(20.0, nyquist))
+        else:
+            epoch_dur = self._get_epoch_dur()
+            min_f = round(1.0 / epoch_dur, 6) if epoch_dur > 0 else 0.01
+            decimals = max(2, min(6, -int(round(min_f)) + 4) if min_f < 0.01 else 3)
+            for spin in (self.ui.spin_lwrfrq, self.ui.spin_uprfrq):
+                spin.setDecimals(decimals)
+                spin.setMinimum(0.0)
+                spin.setMaximum(nyquist)
+            self.ui.spin_lwrfrq.setSingleStep(max(0.001, round(min_f, 6)))
+            self.ui.spin_lwrfrq.setValue(min_f)
+            self.ui.spin_uprfrq.setSingleStep(max(0.001, round(nyquist / 20, 6)))
+            self.ui.spin_uprfrq.setValue(nyquist)
 
 
     # ------------------------------------------------------------    
@@ -109,11 +181,15 @@ class SpecMixin:
         df = self.p.headers()
         
         if df is not None:
-            chs = df.loc[df['SR'] >= 32, 'CH'].tolist()
+            if getattr(self, 'multiday_mode', False):
+                chs = df['CH'].tolist()
+            else:
+                chs = df.loc[df['SR'] >= 32, 'CH'].tolist()
         else:
-            chs = [ ] 
+            chs = [ ]
         
         self.ui.combo_spectrogram.addItems( chs )
+        self._on_spec_channel_changed()
         
 
     # ------------------------------------------------------------
@@ -147,6 +223,14 @@ class SpecMixin:
         self.lock_ui()
 
         # submit worker
+        epoch_dur = self._get_epoch_dur()
+        ns = float(getattr(self, "ns", 0.0))
+        sr = 0.0
+        _hdr = self.p.headers()
+        if _hdr is not None:
+            _row = _hdr.loc[_hdr['CH'] == ch]
+            if not _row.empty:
+                sr = float(_row['SR'].iloc[0])
         fut_spec = self._exec.submit(
             self._derive_spectrogram,
             self.p,
@@ -154,8 +238,10 @@ class SpecMixin:
             float(self.ui.spin_lwrfrq.value()),
             float(self.ui.spin_uprfrq.value()),
             float(self.ui.spin_win.value()),
-            int(getattr(self, "ne", 0)),
-            float(getattr(self, "ns", 0.0))
+            int(ns / epoch_dur) if epoch_dur > 0 else int(getattr(self, "ne", 0)),
+            ns,
+            epoch_dur,
+            sr,
         )
 
 
@@ -189,7 +275,7 @@ class SpecMixin:
     def _spectrogram_done_err(self):
         try:
             from PySide6.QtWidgets import QMessageBox
-            QMessageBox.critical(self, "Error deriving spectrogram", self._last_tb)
+            QMessageBox.critical(self.ui, "Error deriving spectrogram", self._last_tb)
         finally:
             self.unlock_ui()
             self._busy = False
@@ -199,19 +285,27 @@ class SpecMixin:
             self.sb_progress.setVisible(False)
      
             
-    def _derive_spectrogram(self, p, ch, minf, maxf, w, total_epochs=0, total_seconds=0.0):
+    def _derive_spectrogram(self, p, ch, minf, maxf, w, total_epochs=0, total_seconds=0.0, epoch_dur=30, sr=0.0):
         # worker thread: do not touch GUI,
         # return numpy arrays (by ref)
 
-        res = p.silent_proc_lunascope(
-            "EPOCH dur=30 verbose & PSD min-sr=32 epoch-spectrum dB sig="
-            + ch
-            + " min="
-            + str(minf)
-            + " max="
-            + str(maxf)
+        # Override Welch segment params only when needed:
+        #   - low SR: default 4s window would have < 16 samples (e.g. actigraphy)
+        #   - short epoch: epoch shorter than 8s, window must not exceed epoch
+        # Otherwise use Luna's fast default (4s window / 2s increment).
+        if (sr > 0 and sr * 4.0 < 16) or epoch_dur < 8:
+            seg_extra = f" segment-sec={epoch_dur} segment-inc={epoch_dur}"
+        else:
+            seg_extra = ""
+
+        cmd = (
+            f"EPOCH dur={epoch_dur} verbose & PSD min-sr=0 epoch-spectrum dB sig={ch}"
+            f" min={minf} max={maxf}{seg_extra}"
         )
-        df = res['PSD: CH_E_F']
+        res = p.silent_proc_lunascope(cmd)
+        df = res.get('PSD: CH_E_F')
+        if df is None or df.empty:
+            return np.array([]), np.array([]), np.array([])
         dt = res.get('EPOCH: E')
 
         # Use Luna's epoch mapping directly (E -> START), without constructing
@@ -318,7 +412,8 @@ class SpecMixin:
 
         # do plot
         from .plts import plot_hjorth
-        plot_hjorth( ch , ax=self.spectrogramcanvas.ax , p = self.p , gui = self.ui )
+        plot_hjorth( ch , ax=self.spectrogramcanvas.ax , p = self.p , gui = self.ui ,
+                     epoch_dur=self._get_epoch_dur() )
         if hasattr(self, "ns") and self.ns is not None and self.ns > 0:
             self.spectrogramcanvas.ax.set_xlim(0, float(self.ns))
 

@@ -78,6 +78,7 @@ class CMapsMixin:
 
         self.cmap_use_na_for_empty = True
         self.cmap_na_token = "NA"
+        self.cfg_day_anchor = 12
         
         
     #
@@ -157,6 +158,14 @@ class CMapsMixin:
         if 'pops-model' in self.cfg['par']:
             self.cfg_pops_model = self.cfg['par']['pops-model']
             self.ui.txt_pops_model.setText( self.cfg_pops_model )
+
+        if 'day-anchor' in self.cfg['par']:
+            try:
+                v = int(self.cfg['par']['day-anchor'])
+                if 0 <= v <= 23:
+                    self.cfg_day_anchor = v
+            except (ValueError, TypeError):
+                pass
 
                         
         # dock viz
@@ -340,6 +349,7 @@ class CMapsMixin:
             'N2': '#0000FF',  # blue
             'N3': '#000080',  # navy
             'R':  '#FF0000',  # red
+            'S':  '#800080',  # purple (blend of NREM blue and REM red)
             'W':  '#008000',  # green (CSS "green")
             '?':  '#808080',  # gray
             'L':  '#FFFF00',  # yellow
