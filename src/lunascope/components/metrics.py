@@ -422,7 +422,8 @@ class MetricsMixin:
             on_change=lambda anns: (
                 self._update_instances(anns),
                 self._clear_pg1(),
-                self._update_scaling()
+                self._update_scaling(),
+                self._schedule_actigraphy_update() if hasattr(self, "_schedule_actigraphy_update") else None
             ),
         )
 
@@ -566,4 +567,3 @@ def expand_interval(left, right, *, factor=2.0, point_width=10.0, min_left=0.0):
         L += shift
         R += shift
     return L, R
-

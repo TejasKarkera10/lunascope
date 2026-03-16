@@ -287,6 +287,7 @@ class AnalMixin:
         # update main metrics tables (i.e. if new things added)
         self._update_metrics()
         self._update_spectrogram_list()
+        self._update_actigraphy_list()
         self._update_mask_list()
         self._update_soap_list()
 

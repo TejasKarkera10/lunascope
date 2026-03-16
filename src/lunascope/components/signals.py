@@ -200,9 +200,13 @@ class SignalsMixin:
 
         # multi-day mode: records longer than 36 hours
         self.multiday_mode = self.ns > 36 * 3600
+        if hasattr(self, "_update_mode_badge"):
+            self._update_mode_badge()
 
         # set epoch default for spectrogram/hjorth based on record type
         self._set_epoch_default(multiday=self.multiday_mode)
+        if hasattr(self, "_set_actigraphy_epoch_default"):
+            self._set_actigraphy_epoch_default(multiday=self.multiday_mode)
 
         # option defaults
         self.show_labels = True
@@ -378,6 +382,8 @@ class SignalsMixin:
         self.ui.butt_calc_hypnostats.setEnabled(not self.multiday_mode)
         self.ui.butt_soap.setEnabled(not self.multiday_mode)
         self.ui.butt_pops.setEnabled(not self.multiday_mode)
+        if hasattr(self, "_sync_multiday_actigraphy_dock"):
+            self._sync_multiday_actigraphy_dock()
 
         
     # --------------------------------------------------------------------------------

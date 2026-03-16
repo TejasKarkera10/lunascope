@@ -52,6 +52,7 @@ from .components.settings import SettingsMixin
 from .components.masks import MasksMixin
 from .components.ctree import CTreeMixin
 from .components.spectrogram import SpecMixin
+from .components.actigraphy import ActigraphyMixin
 from .components.soappops import SoapPopsMixin
 from .components.cmaps import CMapsMixin
 from .gui_help import apply_gui_help, set_render_button_help
@@ -69,7 +70,7 @@ class Controller( QObject, CMapsMixin,
                   HypnoMixin , SoapPopsMixin, 
                   AnalMixin , SignalsMixin, 
                   SettingsMixin, CTreeMixin ,
-                  SpecMixin , MasksMixin ):
+                  SpecMixin , ActigraphyMixin, MasksMixin ):
 
     def __init__(self, ui, proj):
 
@@ -97,6 +98,7 @@ class Controller( QObject, CMapsMixin,
         self._init_settings()
         self._init_ctree()
         self._init_spec()
+        self._init_actigraphy()
         self._init_soap_pops()
         self._init_masks()
         
@@ -146,6 +148,7 @@ class Controller( QObject, CMapsMixin,
         self.ui.menuView.addAction(self.ui.dock_annots.toggleViewAction())
         self.ui.menuView.addSeparator()
         self.ui.menuView.addAction(self.ui.dock_spectrogram.toggleViewAction())
+        self.ui.menuView.addAction(self.ui.dock_actigraphy.toggleViewAction())
         self.ui.menuView.addAction(self.ui.dock_hypno.toggleViewAction())
         self.ui.menuView.addSeparator()
         self.ui.menuView.addAction(self.ui.dock_mask.toggleViewAction())
@@ -294,6 +297,7 @@ class Controller( QObject, CMapsMixin,
         # hide these after resizing
         self.ui.dock_hypno.hide()
         self.ui.dock_spectrogram.hide()
+        self.ui.dock_actigraphy.hide()
         self.ui.dock_spectrogram.widget().setMinimumHeight(240)
         
         # ------------------------------------------------------------
@@ -321,6 +325,7 @@ class Controller( QObject, CMapsMixin,
         self.sb_start  = mk_section( "" ); 
         self.sb_dur    = mk_section( "" );
         self.sb_ns     = mk_section( "" );
+        self.sb_mode   = mk_section( "" );
         self.sb_progress = QProgressBar()
         self.sb_progress.setRange(0, 100)
         self.sb_progress.setValue(0)
@@ -333,8 +338,13 @@ class Controller( QObject, CMapsMixin,
         sb.addPermanentWidget(vsep(),0)
         sb.addPermanentWidget(self.sb_ns,1)
         sb.addPermanentWidget(vsep(),0)
+        sb.addPermanentWidget(self.sb_mode,1)
+        sb.addPermanentWidget(vsep(),0)
         sb.addPermanentWidget(self.sb_progress,1)
         sb.addPermanentWidget(vsep(),0)
+
+        self.sb_mode.setMinimumWidth(120)
+        self._update_mode_badge()
 
 
         # ------------------------------------------------------------
@@ -354,6 +364,18 @@ class Controller( QObject, CMapsMixin,
 
     def unlock_ui(self):
         self.blocker.hide_block()
+
+    def _update_mode_badge(self):
+        if getattr(self, "multiday_mode", False):
+            self.sb_mode.setText("Study mode: Multiday")
+            self.sb_mode.setStyleSheet(
+                "QLabel { color: #f2d48f; background: rgba(88,64,18,0.35); border: 1px solid rgba(222,184,82,0.35); }"
+            )
+        else:
+            self.sb_mode.setText("Study mode: Standard")
+            self.sb_mode.setStyleSheet(
+                "QLabel { color: #b8c4d6; background: rgba(33,44,62,0.28); border: 1px solid rgba(120,140,170,0.2); }"
+            )
 
     # ------------------------------------------------------------
     # clear all, i.e. drop current record
@@ -445,6 +467,7 @@ class Controller( QObject, CMapsMixin,
         self._update_metrics()
         self._render_hypnogram()
         self._update_spectrogram_list()
+        self._update_actigraphy_list()
         self._update_mask_list()
         self._update_soap_list()
         self._update_params()
@@ -458,8 +481,12 @@ class Controller( QObject, CMapsMixin,
         # draw
         self._render_signals_simple()
 
-        # hypnogram + stats if available
-        self._calc_hypnostats()
+        # multiday records default to the actigraphy dock; otherwise keep HYPNO
+        if getattr(self, "multiday_mode", False):
+            self._sync_multiday_actigraphy_dock()
+        else:
+            self._sync_multiday_actigraphy_dock()
+            self._calc_hypnostats()
 
         
     # ------------------------------------------------------------
@@ -485,6 +512,7 @@ class Controller( QObject, CMapsMixin,
         clear_rows( self.ui.anal_tables ) 
 
         self.ui.combo_spectrogram.clear()
+        self.ui.combo_actigraphy.clear()
         self.ui.combo_pops.clear()
         self.ui.combo_soap.clear()
 
@@ -498,6 +526,17 @@ class Controller( QObject, CMapsMixin,
         if getattr(self, "hypnocanvas", None) is not None:
             self.hypnocanvas.ax.cla()
             self.hypnocanvas.figure.canvas.draw_idle()
+
+        if getattr(self, "actigraphycanvas", None) is not None:
+            self.actigraphycanvas.ax.cla()
+            self.actigraphycanvas.figure.canvas.draw_idle()
+        if hasattr(self, "_update_actigraphy_summary"):
+            self._update_actigraphy_summary()
+        self.multiday_mode = False
+        if hasattr(self, "_update_mode_badge"):
+            self._update_mode_badge()
+        if hasattr(self, "_sync_multiday_actigraphy_dock"):
+            self._sync_multiday_actigraphy_dock()
 
         if getattr(self, "soapcanvas", None) is not None:
             self.soapcanvas.ax.cla()
