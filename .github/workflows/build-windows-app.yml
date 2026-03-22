@@ -26,6 +26,9 @@ jobs:
       - name: Build app
         run: echo Y | .venv\Scripts\pyside6-deploy -c pysidedeploy.spec
 
+      - name: List build output
+        run: Get-ChildItem -Recurse -Depth 2 .
+
       - name: Zip app
         run: Compress-Archive -Path dist\Lunascope -DestinationPath dist\Lunascope-Windows.zip
 
