@@ -27,13 +27,15 @@ jobs:
         run: echo Y | .venv\Scripts\pyside6-deploy -c pysidedeploy.spec
 
       - name: List build output
-        run: Get-ChildItem -Recurse -Depth 2 .
+        run: Get-ChildItem -Recurse -Depth 3 deployment, dist -ErrorAction SilentlyContinue
 
       - name: Zip app
-        run: Compress-Archive -Path dist\Lunascope -DestinationPath dist\Lunascope-Windows.zip
+        run: |
+          $src = if (Test-Path dist\Lunascope) { "dist\Lunascope" } else { "deployment\launch.dist" }
+          Compress-Archive -Path $src -DestinationPath Lunascope-Windows.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Lunascope-Windows
-          path: dist\Lunascope-Windows.zip
+          path: Lunascope-Windows.zip
