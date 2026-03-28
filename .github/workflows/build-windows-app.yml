@@ -39,7 +39,7 @@ jobs:
         run: |
           python -m venv .venv
           .venv\Scripts\pip install --upgrade pip
-          .venv\Scripts\pip install -e .
+          .venv\Scripts\pip install .
           .venv\Scripts\pip install nuitka
 
       - name: Build app
