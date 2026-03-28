@@ -56,6 +56,7 @@ from .components.actigraphy import ActigraphyMixin
 from .components.soappops import SoapPopsMixin
 from .components.cmaps import CMapsMixin
 from .components.results_io import ResultsIOMixin
+from .components.moonbeam_dock import MoonbeamMixin
 from .gui_help import apply_gui_help, set_render_button_help
 from .session_state import save_session_file, load_session_file
 
@@ -68,10 +69,11 @@ from PySide6.QtCore import QObject
 
 class Controller( QObject, CMapsMixin, ResultsIOMixin,
                   SListMixin , MetricsMixin ,
-                  HypnoMixin , SoapPopsMixin, 
-                  AnalMixin , SignalsMixin, 
+                  HypnoMixin , SoapPopsMixin,
+                  AnalMixin , SignalsMixin,
                   SettingsMixin, CTreeMixin ,
-                  SpecMixin , ActigraphyMixin, MasksMixin ):
+                  SpecMixin , ActigraphyMixin, MasksMixin,
+                  MoonbeamMixin ):
 
     def __init__(self, ui, proj):
 
@@ -103,6 +105,7 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         self._init_soap_pops()
         self._init_masks()
         self._init_results_io()
+        self._init_moonbeam()
         
         # for the tables added above, ensure all are read-only
         for v in self.ui.findChildren(QTableView):
@@ -156,6 +159,8 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         self.ui.menuView.addAction(self.ui.dock_mask.toggleViewAction())
         self.ui.menuView.addAction(self.ui.dock_console.toggleViewAction())
         self.ui.menuView.addAction(self.ui.dock_outputs.toggleViewAction())
+        self.ui.menuView.addSeparator()
+        self.ui.menuView.addAction(self.ui.dock_moonbeam.toggleViewAction())
         self.ui.menuView.addSeparator()
         self.ui.menuView.addAction(self.ui.dock_help.toggleViewAction())
 
