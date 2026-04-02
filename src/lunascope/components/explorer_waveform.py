@@ -163,6 +163,8 @@ class WaveformTab(_ExplorerTab):
 
     def __init__(self, ctrl, parent=None):
         super().__init__(ctrl, parent)
+        self._last_result = None
+        self._pending_units = {}
         self._sig_ok.connect(self._on_ok,  Qt.QueuedConnection)
         self._sig_err.connect(self._on_err, Qt.QueuedConnection)
         self._build_widget()
@@ -226,6 +228,39 @@ class WaveformTab(_ExplorerTab):
         rl2.addWidget(chk_baseline)
         rl2.addStretch(1); rl2.addWidget(btn_render)
 
+        # row 3: y-axis controls
+        row3 = QWidget(); rl3 = QHBoxLayout(row3)
+        rl3.setContentsMargins(0,0,0,0); rl3.setSpacing(6)
+
+        chk_auto_ymin = QCheckBox("Auto min")
+        chk_auto_ymin.setChecked(True)
+        spin_ymin = QDoubleSpinBox()
+        spin_ymin.setRange(-1_000_000_000, 1_000_000_000)
+        spin_ymin.setDecimals(2)
+        spin_ymin.setSingleStep(5.0)
+        spin_ymin.setValue(-100.0)
+        spin_ymin.setFixedWidth(92)
+        spin_ymin.setEnabled(False)
+        spin_ymin.setToolTip("Manual lower y-axis limit")
+
+        chk_auto_ymax = QCheckBox("Auto max")
+        chk_auto_ymax.setChecked(True)
+        spin_ymax = QDoubleSpinBox()
+        spin_ymax.setRange(-1_000_000_000, 1_000_000_000)
+        spin_ymax.setDecimals(2)
+        spin_ymax.setSingleStep(5.0)
+        spin_ymax.setValue(100.0)
+        spin_ymax.setFixedWidth(92)
+        spin_ymax.setEnabled(False)
+        spin_ymax.setToolTip("Manual upper y-axis limit")
+
+        rl3.addWidget(QLabel("Y min:")); rl3.addWidget(spin_ymin)
+        rl3.addWidget(chk_auto_ymin)
+        rl3.addSpacing(12)
+        rl3.addWidget(QLabel("Y max:")); rl3.addWidget(spin_ymax)
+        rl3.addWidget(chk_auto_ymax)
+        rl3.addStretch(1)
+
         # canvas host
         canvas_host = QFrame()
         canvas_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -234,7 +269,7 @@ class WaveformTab(_ExplorerTab):
         canvas_host.layout().setContentsMargins(0,0,0,0)
         self._canvas_host = canvas_host
 
-        outer.addWidget(row1); outer.addWidget(row2); outer.addWidget(canvas_host, 1)
+        outer.addWidget(row1); outer.addWidget(row2); outer.addWidget(row3); outer.addWidget(canvas_host, 1)
 
         # store
         self._root        = root
@@ -244,10 +279,18 @@ class WaveformTab(_ExplorerTab):
         self._spin_post   = spin_post
         self._combo_align = combo_align
         self._chk_base    = chk_baseline
+        self._chk_auto_ymin = chk_auto_ymin
+        self._chk_auto_ymax = chk_auto_ymax
+        self._spin_ymin   = spin_ymin
+        self._spin_ymax   = spin_ymax
 
         # wire
         btn_refresh.clicked.connect(self.refresh_controls)
         btn_render.clicked.connect(self._render_trigger)
+        chk_auto_ymin.toggled.connect(self._on_y_limit_toggle)
+        chk_auto_ymax.toggled.connect(self._on_y_limit_toggle)
+        spin_ymin.valueChanged.connect(self._redraw_cached)
+        spin_ymax.valueChanged.connect(self._redraw_cached)
         self._save_btn = QPushButton("Export…"); self._save_btn.setFixedWidth(80)
         rl1.addWidget(self._save_btn)
         self._save_btn.clicked.connect(self._save_figure)
@@ -282,6 +325,32 @@ class WaveformTab(_ExplorerTab):
             channels = []
         self._combo_ch.set_items(channels)
 
+    def _get_channel_units(self, channels):
+        """Map channel name to physical unit from EDF headers when available."""
+        p = getattr(self.ctrl, "p", None)
+        if p is None:
+            return {}
+        try:
+            df_h = p.headers()
+        except Exception:
+            return {}
+        if df_h is None or "CH" not in df_h.columns:
+            return {}
+
+        unit_col = next((c for c in ("PDIM", "UNIT", "UNITS") if c in df_h.columns), None)
+        if unit_col is None:
+            return {}
+
+        units = {}
+        for _, row in df_h.iterrows():
+            ch = str(row.get("CH", "")).strip()
+            if not ch or ch not in channels:
+                continue
+            raw_unit = row.get(unit_col, "")
+            unit = "" if pd.isna(raw_unit) else str(raw_unit).strip()
+            units[ch] = unit
+        return units
+
     # ------------------------------------------------------------------
     # Render
     # ------------------------------------------------------------------
@@ -302,6 +371,13 @@ class WaveformTab(_ExplorerTab):
             QtWidgets.QMessageBox.warning(self._root, "Waveform",
                                           "Select at least one channel.")
             return
+        _, _, y_limits_valid = self._get_y_limits()
+        if not y_limits_valid:
+            QtWidgets.QMessageBox.warning(
+                self._root, "Waveform",
+                "Manual Y-axis minimum must be smaller than maximum."
+            )
+            return
         if not self._start_work("Extracting waveforms…"):
             return
 
@@ -310,6 +386,7 @@ class WaveformTab(_ExplorerTab):
         align_to = self._combo_align.currentData()
         baseline = self._chk_base.isChecked()
         ns       = float(getattr(self.ctrl, "ns", 0.0))
+        self._pending_units = self._get_channel_units(chs)
 
         fut = self.ctrl._exec.submit(
             _extract_traces, p, ns, ann, chs, pre, post, align_to, baseline)
@@ -322,12 +399,16 @@ class WaveformTab(_ExplorerTab):
 
     def _on_ok(self, result):
         try:
+            result["units"] = dict(self._pending_units)
+            self._last_result = result
             self._draw(result)
         finally:
+            self._pending_units = {}
             self._end_work()
 
     def _on_err(self, tb_str):
         try:
+            self._pending_units = {}
             QtWidgets.QMessageBox.critical(
                 self._root, "Waveform error", tb_str[:800])
         finally:
@@ -336,6 +417,25 @@ class WaveformTab(_ExplorerTab):
     # ------------------------------------------------------------------
     # Drawing
     # ------------------------------------------------------------------
+
+    def _on_y_limit_toggle(self):
+        self._spin_ymin.setEnabled(not self._chk_auto_ymin.isChecked())
+        self._spin_ymax.setEnabled(not self._chk_auto_ymax.isChecked())
+        self._redraw_cached()
+
+    def _get_y_limits(self):
+        y_min = None if self._chk_auto_ymin.isChecked() else float(self._spin_ymin.value())
+        y_max = None if self._chk_auto_ymax.isChecked() else float(self._spin_ymax.value())
+        if y_min is not None and y_max is not None and y_min >= y_max:
+            return None, None, False
+        return y_min, y_max, True
+
+    def _redraw_cached(self, *_):
+        if self._last_result is not None:
+            _, _, y_limits_valid = self._get_y_limits()
+            if not y_limits_valid:
+                return
+            self._draw(self._last_result)
 
     def _draw(self, result):
         channels  = result["channels"]
@@ -346,6 +446,7 @@ class WaveformTab(_ExplorerTab):
         ci_hi     = result["ci_hi"]
         n_ev      = result["n_events"]
         ann_cls   = result["annot_class"]
+        units     = result.get("units", {})
 
         chs_with_data = [ch for ch in channels if ch in mean_d]
         if not chs_with_data:
@@ -362,6 +463,7 @@ class WaveformTab(_ExplorerTab):
                             top=0.90, bottom=0.10)
         fig.suptitle(f"Peri-event waveform  |  '{ann_cls}'  ({n_ev} events)",
                      color=FG, fontsize=10, y=0.97)
+        y_min, y_max, _ = self._get_y_limits()
 
         colors = ["#4cc9f0", "#f9844a", "#06d6a0", "#a78bfa",
                   "#ffd166", "#f72585", "#90be6d", "#ff6b6b"]
@@ -386,7 +488,9 @@ class WaveformTab(_ExplorerTab):
             ax.axvline(0, color="#ffffff", lw=0.7, ls="--", alpha=0.55)
             ax.axhline(0, color=GRID, lw=0.4, alpha=0.7)
 
-            self._style_ax(ax, title=ch, ylabel="µV" if ch_idx == 0 else "")
+            self._style_ax(ax, title=ch, ylabel=units.get(ch, ""))
+            if y_min is not None or y_max is not None:
+                ax.set_ylim(bottom=y_min, top=y_max)
             if ch_idx < n - 1:
                 ax.set_xticklabels([])
             else:

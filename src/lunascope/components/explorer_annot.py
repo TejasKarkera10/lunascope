@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt, QSignalBlocker, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
-    QListWidget, QListWidgetItem, QPushButton, QSizePolicy, QSplitter,
+    QListWidget, QListWidgetItem, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QVBoxLayout, QWidget,
 )
 
@@ -168,9 +168,17 @@ class AnnotTab(_ExplorerTab):
         canvas_host.layout().setContentsMargins(0, 0, 0, 0)
         self._canvas_host = canvas_host
 
+        canvas_scroll = QScrollArea()
+        canvas_scroll.setFrameShape(QFrame.NoFrame)
+        canvas_scroll.setWidgetResizable(True)
+        canvas_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        canvas_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        canvas_scroll.setWidget(canvas_host)
+        self._canvas_scroll = canvas_scroll
+
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(list_cls)
-        splitter.addWidget(canvas_host)
+        splitter.addWidget(canvas_scroll)
         splitter.setSizes([200, 1000])
         splitter.setStretchFactor(0, 0); splitter.setStretchFactor(1, 1)
 
@@ -206,6 +214,20 @@ class AnnotTab(_ExplorerTab):
 
         # Set initial visibility
         self._on_view_changed()
+
+    def _set_canvas_height(self, nrows: int | None = None):
+        """Let multi-row plot grids grow vertically and scroll instead of squashing."""
+        canvas = self._ensure_canvas()
+        if canvas is None:
+            return
+        if nrows is None or nrows <= 1:
+            canvas.setMinimumHeight(0)
+            return
+        canvas.setMinimumHeight(120 + (nrows * 260) + ((nrows - 1) * 24))
+
+    def _render_empty(self, msg: str = ""):
+        self._set_canvas_height()
+        super()._render_empty(msg)
 
     # ------------------------------------------------------------------
     # View-change: show/hide controls that are specific to certain views
@@ -498,6 +520,7 @@ class AnnotTab(_ExplorerTab):
         anchor_lbl = {"start": "onset", "mid": "mid", "end": "offset"}.get(ref_anchor, ref_anchor)
         n = len(targets)
         ncols = min(n, 3); nrows = int(np.ceil(n / ncols))
+        self._set_canvas_height(nrows)
         axes = fig.subplots(nrows, ncols, squeeze=False)
         fig.subplots_adjust(hspace=0.45, wspace=0.35,
                             left=0.08, right=0.97, top=0.90, bottom=0.10)
@@ -532,6 +555,7 @@ class AnnotTab(_ExplorerTab):
     def _render_overlap(self, data):
         from matplotlib.colors import LinearSegmentedColormap
         canvas = self._ensure_canvas()
+        self._set_canvas_height()
         fig = canvas.figure; fig.clear(); fig.patch.set_facecolor(BG)
         labels  = data.get("labels", [])
         jaccard = data.get("jaccard", np.zeros((0, 0)))
@@ -574,6 +598,7 @@ class AnnotTab(_ExplorerTab):
 
     def _render_nearest(self, data, colors, ref_class):
         canvas = self._ensure_canvas()
+        self._set_canvas_height()
         fig = canvas.figure; fig.clear(); fig.patch.set_facecolor(BG)
         non_empty = {cls: arr for cls, arr in data.items() if len(arr) > 0}
         if not non_empty:
@@ -604,6 +629,7 @@ class AnnotTab(_ExplorerTab):
 
     def _render_raster(self, data, colors):
         canvas = self._ensure_canvas()
+        self._set_canvas_height()
         fig = canvas.figure; fig.clear(); fig.patch.set_facecolor(BG)
         by_class      = data.get("by_class", {})
         subject_bounds= data.get("subject_bounds", [])
@@ -646,6 +672,7 @@ class AnnotTab(_ExplorerTab):
     def _render_occupancy(self, data):
         from matplotlib.colors import LinearSegmentedColormap
         canvas = self._ensure_canvas()
+        self._set_canvas_height()
         fig = canvas.figure; fig.clear(); fig.patch.set_facecolor(BG)
 
         bins      = data.get("bins", np.array([]))
@@ -727,6 +754,7 @@ class AnnotTab(_ExplorerTab):
     def _render_duration(self, data, colors):
         from scipy.stats import gaussian_kde
         canvas = self._ensure_canvas()
+        self._set_canvas_height()
         fig = canvas.figure; fig.clear(); fig.patch.set_facecolor(BG)
         if not data:
             self._render_empty("No duration data available."); return
@@ -768,6 +796,7 @@ class AnnotTab(_ExplorerTab):
 
     def _render_iei(self, data, colors):
         canvas = self._ensure_canvas()
+        self._set_canvas_height()
         fig = canvas.figure; fig.clear(); fig.patch.set_facecolor(BG)
         non_empty = {cls: arr for cls, arr in data.items() if len(arr) > 0}
         if not non_empty:
