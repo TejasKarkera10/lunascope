@@ -57,11 +57,29 @@ jobs:
       - name: Build app
         run: .venv\Scripts\pyside6-deploy -f -c pysidedeploy.spec
 
+      - name: Normalize app output path
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $outputPath = Get-ChildItem deployment, dist -Directory -Filter *.dist -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $outputPath) {
+            Write-Host "No .dist directory found under deployment or dist"
+            Get-ChildItem deployment, dist -Recurse -Depth 3 -ErrorAction SilentlyContinue
+            exit 1
+          }
+          Write-Host "Using app output: $outputPath"
+          $normalizedPath = Join-Path (Resolve-Path dist) "Lunascope.dist"
+          if ($outputPath -ne $normalizedPath) {
+            if (Test-Path $normalizedPath) { Remove-Item -Recurse -Force $normalizedPath }
+            Copy-Item -Recurse -Force $outputPath $normalizedPath
+          }
+
       - name: List build output
         run: Get-ChildItem -Recurse -Depth 3 deployment, dist -ErrorAction SilentlyContinue
 
       - name: Zip app
         run: |
+          if (Test-Path Lunascope-Windows.zip) { Remove-Item -Force Lunascope-Windows.zip }
           Compress-Archive -Path dist\Lunascope.dist -DestinationPath Lunascope-Windows.zip
 
       - name: Upload artifact

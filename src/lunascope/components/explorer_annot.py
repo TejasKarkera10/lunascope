@@ -37,8 +37,9 @@ from .annot_explorer_funcs import (
 class AnnotTab(_ExplorerTab):
     """Annotation Explorer tab: cohort-level annotation visualisation."""
 
-    _sig_ok  = QtCore.Signal(object)   # analysis result dict
-    _sig_err = QtCore.Signal(str)       # traceback
+    _sig_ok       = QtCore.Signal(object)   # analysis result dict
+    _sig_err      = QtCore.Signal(str)       # traceback
+    _sig_progress = QtCore.Signal(int, int)  # (done, total) during compile
 
     # view-mode keys and labels
     _VIEWS = [
@@ -60,8 +61,9 @@ class AnnotTab(_ExplorerTab):
         self._render_timer.setInterval(250)
         self._render_timer.timeout.connect(self._render_view)
 
-        self._sig_ok.connect(self._on_ok,  Qt.QueuedConnection)
-        self._sig_err.connect(self._on_err, Qt.QueuedConnection)
+        self._sig_ok.connect(self._on_ok,           Qt.QueuedConnection)
+        self._sig_err.connect(self._on_err,          Qt.QueuedConnection)
+        self._sig_progress.connect(self._on_progress, Qt.QueuedConnection)
 
         self._build_widget()
 
@@ -126,10 +128,30 @@ class AnnotTab(_ExplorerTab):
         spin_gap.setSuffix(" s"); spin_gap.setDecimals(0); spin_gap.setFixedWidth(72)
         spin_gap.setToolTip("Gap between subjects in raster (seconds)")
 
+        combo_anchor = QComboBox(); combo_anchor.setFixedWidth(64)
+        combo_anchor.addItem("Start", "start")
+        combo_anchor.addItem("Mid",   "mid")
+        combo_anchor.addItem("End",   "end")
+        combo_anchor.setCurrentIndex(1)
+        combo_anchor.setToolTip("Reference event anchor point (PETH)")
+
+        combo_tgt_mode = QComboBox(); combo_tgt_mode.setFixedWidth(110)
+        combo_tgt_mode.addItem("Active span", "span")
+        combo_tgt_mode.addItem("Onset",       "onset")
+        combo_tgt_mode.setToolTip(
+            "Active span: P(target covering lag t) — natural for epoch annotations\n"
+            "Onset: rate of target start times at each lag — natural for point events")
+
+        lbl_anchor   = QLabel("Anchor:")
+        lbl_tgt_mode = QLabel("Target:")
+        lbl_gap      = QLabel("Gap:")
+
         rl2.addWidget(QLabel("Ref:")); rl2.addWidget(combo_ref, 1)
         rl2.addWidget(QLabel("±")); rl2.addWidget(spin_win)
         rl2.addWidget(QLabel("Bin:")); rl2.addWidget(spin_bin)
-        rl2.addWidget(QLabel("Gap:")); rl2.addWidget(spin_gap)
+        rl2.addWidget(lbl_anchor);   rl2.addWidget(combo_anchor)
+        rl2.addWidget(lbl_tgt_mode); rl2.addWidget(combo_tgt_mode)
+        rl2.addWidget(lbl_gap);      rl2.addWidget(spin_gap)
         rl2.addStretch(1)
 
         # ---- class list (left) + canvas (right) -----------------------
@@ -155,25 +177,51 @@ class AnnotTab(_ExplorerTab):
         outer.addWidget(row1); outer.addWidget(row2); outer.addWidget(splitter, 1)
 
         # ---- store refs -----------------------------------------------
-        self._root        = root
-        self._lbl_status  = lbl_status
-        self._combo_view  = combo_view
-        self._combo_ref   = combo_ref
-        self._spin_win    = spin_win
-        self._spin_bin    = spin_bin
-        self._spin_gap    = spin_gap
-        self._list_cls    = list_cls
+        self._root          = root
+        self._lbl_status    = lbl_status
+        self._combo_view    = combo_view
+        self._combo_ref     = combo_ref
+        self._spin_win      = spin_win
+        self._spin_bin      = spin_bin
+        self._spin_gap      = spin_gap
+        self._combo_anchor  = combo_anchor
+        self._combo_tgt_mode= combo_tgt_mode
+        self._lbl_anchor    = lbl_anchor
+        self._lbl_tgt_mode  = lbl_tgt_mode
+        self._lbl_gap       = lbl_gap
+        self._list_cls      = list_cls
 
         # ---- wire signals ---------------------------------------------
         btn_compile.clicked.connect(self._compile)
         btn_load.clicked.connect(self._load_cache)
         btn_save.clicked.connect(self._save_cache)
         btn_export.clicked.connect(self._save_figure)
-        combo_view.currentIndexChanged.connect(self._schedule_render)
+        combo_view.currentIndexChanged.connect(self._on_view_changed)
         combo_ref.currentIndexChanged.connect(self._schedule_render)
         spin_win.valueChanged.connect(self._schedule_render)
         spin_bin.valueChanged.connect(self._schedule_render)
         spin_gap.valueChanged.connect(self._schedule_render)
+        combo_anchor.currentIndexChanged.connect(self._schedule_render)
+        combo_tgt_mode.currentIndexChanged.connect(self._schedule_render)
+
+        # Set initial visibility
+        self._on_view_changed()
+
+    # ------------------------------------------------------------------
+    # View-change: show/hide controls that are specific to certain views
+    # ------------------------------------------------------------------
+
+    def _on_view_changed(self, *_):
+        view = self._combo_view.currentData()
+        is_peth   = (view == "peth")
+        is_raster = (view == "raster")
+        self._lbl_anchor.setVisible(is_peth)
+        self._combo_anchor.setVisible(is_peth)
+        self._lbl_tgt_mode.setVisible(is_peth)
+        self._combo_tgt_mode.setVisible(is_peth)
+        self._lbl_gap.setVisible(is_raster)
+        self._spin_gap.setVisible(is_raster)
+        self._schedule_render()
 
     # ------------------------------------------------------------------
     # Sample-list helpers
@@ -240,10 +288,21 @@ class AnnotTab(_ExplorerTab):
                 self._root, "Annotation Explorer",
                 "No subjects in the sample list.")
             return
-        if not self._start_work(f"Compiling annotations from {len(ids)} subjects…"):
+        n = len(ids)
+        if not self._start_work(f"Compiling annotations from {n} subjects…"):
             return
+        self._render_empty(
+            f"Compiling annotations from {n} subjects…\n\nPlease wait.\n\n"
+            "Tip: use  Save cache…  after compiling\n"
+            "to speed up future loads."
+        )
         self._saved_id = self._get_current_id()
-        fut = self.ctrl._exec.submit(compile_cohort, self.ctrl.proj, ids)
+
+        def _progress_cb(done, total):
+            self._sig_progress.emit(done, total)
+
+        fut = self.ctrl._exec.submit(
+            compile_cohort, self.ctrl.proj, ids, None, _progress_cb)
         def _done(_f=fut):
             try:
                 self._sig_ok.emit({"type": "compile", "result": _f.result()})
@@ -271,14 +330,17 @@ class AnnotTab(_ExplorerTab):
         if not self._start_work("Analysing…"):
             return
 
-        view   = self._combo_view.currentData()
-        ref    = self._combo_ref.currentText()
-        window = float(self._spin_win.value())
-        bin_s  = float(self._spin_bin.value())
-        gap    = float(self._spin_gap.value())
+        view       = self._combo_view.currentData()
+        ref        = self._combo_ref.currentText()
+        window     = float(self._spin_win.value())
+        bin_s      = float(self._spin_bin.value())
+        gap        = float(self._spin_gap.value())
+        ref_anchor = self._combo_anchor.currentData()
+        tgt_mode   = self._combo_tgt_mode.currentData()
 
         fut = self.ctrl._exec.submit(
-            self._analyze_worker, cohort, view, checked, ref, window, bin_s, gap)
+            self._analyze_worker, cohort, view, checked, ref, window, bin_s, gap,
+            ref_anchor, tgt_mode)
         def _done(_f=fut):
             try:
                 self._sig_ok.emit({"type": "render", "result": _f.result()})
@@ -287,7 +349,8 @@ class AnnotTab(_ExplorerTab):
         fut.add_done_callback(_done)
 
     @staticmethod
-    def _analyze_worker(cohort, view, checked, ref, window, bin_s, gap):
+    def _analyze_worker(cohort, view, checked, ref, window, bin_s, gap,
+                        ref_anchor="mid", tgt_mode="span"):
         colors = {
             cls: ANNOT_PALETTE[cohort["annot_classes"].index(cls) % len(ANNOT_PALETTE)]
             if cls in cohort["annot_classes"] else "#aaaaaa"
@@ -295,7 +358,8 @@ class AnnotTab(_ExplorerTab):
         }
         if view == "peth":
             targets = [c for c in checked if c != ref]
-            data = peri_event_histogram(cohort, ref, targets, window, bin_s)
+            data = peri_event_histogram(cohort, ref, targets, window, bin_s,
+                                        ref_anchor=ref_anchor, target_mode=tgt_mode)
         elif view == "overlap":
             data = overlap_matrix(cohort, checked, bin_secs=bin_s)
         elif view == "nearest":
@@ -336,6 +400,10 @@ class AnnotTab(_ExplorerTab):
                 self._root, "Annotation Explorer error", tb_str[:800])
         finally:
             self._end_work()
+
+    def _on_progress(self, done, total):
+        self._lbl_status.setStyleSheet("color:#888;")
+        self._lbl_status.setText(f"Compiling…  {done} / {total}")
 
     # ------------------------------------------------------------------
     # Post-compile UI update
@@ -412,24 +480,30 @@ class AnnotTab(_ExplorerTab):
     def _render_peth(self, data, colors, ref_class):
         canvas = self._ensure_canvas()
         fig = canvas.figure; fig.clear(); fig.patch.set_facecolor(BG)
-        targets = data.get("target_classes", [])
-        n_ref   = data.get("n_ref", 0)
-        bins    = data.get("bins", np.array([]))
-        density = data.get("density", {})
-        window  = data.get("window", 60)
+        targets    = data.get("target_classes", [])
+        n_ref      = data.get("n_ref", 0)
+        bins       = data.get("bins", np.array([]))
+        density    = data.get("density", {})
+        window     = data.get("window", 60)
+        ref_anchor = data.get("ref_anchor", "mid")
+        tgt_mode   = data.get("target_mode", "span")
         if not targets or n_ref == 0 or len(bins) == 0:
             ax = fig.add_subplot(111); ax.set_facecolor(BG); ax.set_axis_off()
             ax.text(0.5, 0.5, f"No reference events of  '{ref_class}'  found.",
                     color=FG, ha="center", va="center", fontsize=10,
                     transform=ax.transAxes)
             canvas.draw(); return
+        ylabel = "P(active)" if tgt_mode == "span" else "events / ref / s"
+        anchor_lbl = {"start": "onset", "mid": "mid", "end": "offset"}.get(ref_anchor, ref_anchor)
         n = len(targets)
         ncols = min(n, 3); nrows = int(np.ceil(n / ncols))
         axes = fig.subplots(nrows, ncols, squeeze=False)
         fig.subplots_adjust(hspace=0.45, wspace=0.35,
                             left=0.08, right=0.97, top=0.90, bottom=0.10)
-        fig.suptitle(f"Peri-event density  |  ref: {ref_class}  ({n_ref:,} events)",
-                     color=FG, fontsize=10, y=0.97)
+        fig.suptitle(
+            f"Peri-event  |  ref: {ref_class} @ {anchor_lbl}  ({n_ref:,} events)"
+            f"  |  target: {tgt_mode}",
+            color=FG, fontsize=10, y=0.97)
         for idx, cls in enumerate(targets):
             r, c_ = divmod(idx, ncols)
             ax = axes[r][c_]
@@ -439,7 +513,7 @@ class AnnotTab(_ExplorerTab):
             ax.step(bins, dens, where="mid", color=col, linewidth=1.2)
             ax.axvline(0, color="#ffffff", linewidth=0.7, linestyle="--", alpha=0.5)
             ax.set_xlim(-window, window)
-            self._style_ax(ax, title=cls, xlabel="lag (s)", ylabel="density")
+            self._style_ax(ax, title=cls, xlabel="lag (s)", ylabel=ylabel)
         for idx in range(n, nrows * ncols):
             r, c_ = divmod(idx, ncols); axes[r][c_].set_visible(False)
         canvas.draw()

@@ -79,15 +79,17 @@ jobs:
       - name: Normalize app bundle path
         run: |
           mkdir -p dist
-          app_path="$(find deployment dist -maxdepth 2 -type d -name '*.app' | head -n 1)"
+          app_path="$(find deployment dist -maxdepth 2 -type d -name '*.app' 2>/dev/null | head -n 1)"
           if [ -z "$app_path" ]; then
             echo "No .app bundle found under deployment/ or dist/"
             find deployment dist -maxdepth 3 -print || true
             exit 1
           fi
           echo "Using app bundle: $app_path"
-          rm -rf dist/Lunascope.app
-          cp -R "$app_path" dist/Lunascope.app
+          if [ "$app_path" != "dist/Lunascope.app" ]; then
+            rm -rf dist/Lunascope.app
+            cp -R "$app_path" dist/Lunascope.app
+          fi
 
       - name: List build output
         run: |

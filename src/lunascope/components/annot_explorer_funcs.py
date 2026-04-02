@@ -93,7 +93,7 @@ def get_annot_color(cls: str, classes: List[str]) -> str:
 # Cohort compilation
 # ---------------------------------------------------------------------------
 
-def compile_cohort(proj, ids: List[str], exclude_classes=None) -> dict:
+def compile_cohort(proj, ids: List[str], exclude_classes=None, progress_cb=None) -> dict:
     """Iterate over *ids* and collect annotation events from each subject.
 
     Designed to run in a background thread.  Modifies the project's current
@@ -185,6 +185,11 @@ def compile_cohort(proj, ids: List[str], exclude_classes=None) -> dict:
                 print(f"[AnnotExplorer] Cannot fetch annots for {id_str!r}: {e}")
 
         subjects.append({"id": id_str, "duration": dur, "events": ev})
+        if progress_cb is not None:
+            try:
+                progress_cb(len(subjects), len(ids))
+            except Exception:
+                pass
 
     total_events = sum(len(s["events"]) for s in subjects)
 
@@ -386,23 +391,28 @@ def peri_event_histogram(
     target_classes: List[str],
     window_secs: float = 60.0,
     bin_secs: float = 2.0,
+    ref_anchor: str = "mid",
+    target_mode: str = "span",
 ) -> dict:
     """Compute peri-event time histograms centred on *ref_class* events.
 
-    For every event of class *ref_class* (across all subjects), the time of
-    every *target_classes* event in **the same subject** is measured relative
-    to the midpoint of the reference event.  Lags outside ±*window_secs* are
-    discarded.
+    Parameters
+    ----------
+    ref_anchor : "start" | "mid" | "end"
+        Which part of the reference event is used as the time-zero anchor.
+    target_mode : "span" | "onset"
+        "span"  — for each lag bin, counts how many reference events have the
+                  target annotation *active* (spanning) at that lag.  Gives
+                  P(active) on the y-axis; natural for long/epoch annotations.
+        "onset" — counts target event *onsets* (start times) at each lag
+                  relative to the reference anchor.  Gives rate (events / ref / s);
+                  natural for brief point-process events.
 
     Returns
     -------
     dict with keys:
-        bins      – bin centres (seconds)
-        edges     – bin edges (length = len(bins)+1)
-        counts    – {class: raw count array}
-        density   – {class: events per reference event per second}
-        n_ref     – total number of reference events
-        ref_class, target_classes, window, bin_secs
+        bins, edges, counts, density, n_ref, ref_class, target_classes,
+        window, bin_secs, ref_anchor, target_mode
     """
     bin_secs = max(bin_secs, 0.01)
     window_secs = max(window_secs, bin_secs)
@@ -423,28 +433,56 @@ def peri_event_histogram(
         if ref_ev.empty:
             continue
 
-        # Use event midpoints for lags
-        ref_times = (ref_ev["Start"].values + ref_ev["Stop"].values) / 2.0
+        if ref_anchor == "start":
+            ref_times = ref_ev["Start"].values.astype(float)
+        elif ref_anchor == "end":
+            ref_times = ref_ev["Stop"].values.astype(float)
+        else:  # "mid"
+            ref_times = ((ref_ev["Start"].values + ref_ev["Stop"].values) / 2.0)
         n_ref += len(ref_times)
 
         for cls in target_classes:
             tgt_ev = ev[ev["Class"] == cls]
             if tgt_ev.empty:
                 continue
-            tgt_times = (tgt_ev["Start"].values + tgt_ev["Stop"].values) / 2.0
 
-            # Vectorised: all pairwise lags in one shot
-            # shape (N_tgt, N_ref) → ravel → filter → histogram
-            lags = (tgt_times[:, np.newaxis] - ref_times[np.newaxis, :]).ravel()
-            in_win = lags[(lags >= edges[0]) & (lags < edges[-1])]
-            if len(in_win):
-                c, _ = np.histogram(in_win, bins=edges)
-                counts[cls] += c
+            if target_mode == "span":
+                # Each target interval [ts, te] is active at lag t when
+                # ts - ref <= t <= te - ref.  Accumulate via diff+cumsum.
+                tgt_starts = tgt_ev["Start"].values.astype(float)
+                tgt_stops  = tgt_ev["Stop"].values.astype(float)
+                # All pairwise lag intervals — shape (N_tgt * N_ref,)
+                lag_lo = (tgt_starts[:, np.newaxis] - ref_times[np.newaxis, :]).ravel()
+                lag_hi = (tgt_stops[:, np.newaxis]  - ref_times[np.newaxis, :]).ravel()
+                # Clip to window and convert to bin indices
+                b0 = np.clip(
+                    np.searchsorted(edges, lag_lo, side="right") - 1, 0, n_bins)
+                b1 = np.clip(
+                    np.searchsorted(edges, lag_hi, side="left"),  0, n_bins)
+                valid = b1 > b0
+                if valid.any():
+                    delta = np.zeros(n_bins + 1, dtype=float)
+                    np.add.at(delta, b0[valid].astype(int),  1.0)
+                    np.add.at(delta, b1[valid].astype(int), -1.0)
+                    counts[cls] += np.cumsum(delta)[:n_bins]
+            else:
+                # "onset": histogram of target start times relative to ref anchor
+                tgt_times = tgt_ev["Start"].values.astype(float)
+                lags = (tgt_times[:, np.newaxis] - ref_times[np.newaxis, :]).ravel()
+                in_win = lags[(lags >= edges[0]) & (lags < edges[-1])]
+                if len(in_win):
+                    c, _ = np.histogram(in_win, bins=edges)
+                    counts[cls] += c
 
     density = {}
     for cls in target_classes:
         if n_ref > 0:
-            density[cls] = counts[cls] / (n_ref * bin_secs)
+            if target_mode == "span":
+                # P(target active at lag t) — dimensionless probability
+                density[cls] = counts[cls] / n_ref
+            else:
+                # rate: target onsets per reference event per second
+                density[cls] = counts[cls] / (n_ref * bin_secs)
         else:
             density[cls] = np.zeros(n_bins, dtype=float)
 
@@ -458,6 +496,8 @@ def peri_event_histogram(
         "bin_secs": bin_secs,
         "ref_class": ref_class,
         "target_classes": target_classes,
+        "ref_anchor": ref_anchor,
+        "target_mode": target_mode,
     }
 
 
