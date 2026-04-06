@@ -525,11 +525,14 @@ def overlap_matrix(
     cohort: dict,
     annot_classes: List[str],
     bin_secs: float = 5.0,
+    flank_secs: float = 0.0,
 ) -> dict:
     """Compute pairwise overlap statistics using binary occupancy arrays.
 
     Each subject's recording is discretised into *bin_secs*-wide bins.  An
     annotation occupies a bin if any part of it falls within that bin.
+    Optionally, each event can be expanded by ``flank_secs`` on both sides
+    before occupancy is computed.
 
     Returns
     -------
@@ -541,6 +544,7 @@ def overlap_matrix(
         occ_frac  – {class: fraction of total recording time occupied}
     """
     n = len(annot_classes)
+    flank_secs = max(float(flank_secs), 0.0)
     if n == 0:
         return {
             "jaccard": np.zeros((0, 0)),
@@ -574,10 +578,10 @@ def overlap_matrix(
                 continue
 
             starts = np.clip(
-                (cls_ev["Start"].values / bin_secs).astype(int), 0, n_bins
+                ((cls_ev["Start"].values - flank_secs) / bin_secs).astype(int), 0, n_bins
             )
             stops = np.clip(
-                np.ceil(cls_ev["Stop"].values / bin_secs).astype(int), 0, n_bins
+                np.ceil((cls_ev["Stop"].values + flank_secs) / bin_secs).astype(int), 0, n_bins
             )
 
             diff = np.zeros(n_bins + 1, dtype=np.int32)
@@ -649,6 +653,7 @@ def nearest_neighbor_distances(
     cohort: dict,
     ref_class: str,
     target_classes: List[str],
+    max_secs: Optional[float] = 3600.0,
 ) -> dict:
     """For each event of *ref_class*, find the time to the nearest event of
     each *target_classes* annotation **within the same subject**.
@@ -658,6 +663,7 @@ def nearest_neighbor_distances(
     {class: sorted np.ndarray of distances in seconds}
     """
     distances: Dict[str, list] = {cls: [] for cls in target_classes}
+    max_secs = None if max_secs is None else max(float(max_secs), 0.0)
 
     for subj in cohort["subjects"]:
         ev = subj["events"]
@@ -678,6 +684,8 @@ def nearest_neighbor_distances(
             # For each ref event, minimum absolute distance to any target event
             diffs = np.abs(ref_times[:, np.newaxis] - tgt_times[np.newaxis, :])
             min_d = diffs.min(axis=1)
+            if max_secs is not None:
+                min_d = min_d[min_d <= max_secs]
             distances[cls].extend(min_d.tolist())
 
     return {cls: np.sort(np.array(v)) for cls, v in distances.items()}
@@ -687,7 +695,11 @@ def nearest_neighbor_distances(
 # Inter-event intervals
 # ---------------------------------------------------------------------------
 
-def inter_event_intervals(cohort: dict, annot_classes: List[str]) -> dict:
+def inter_event_intervals(
+    cohort: dict,
+    annot_classes: List[str],
+    max_secs: Optional[float] = 3600.0,
+) -> dict:
     """Compute gap between consecutive events (Stop[i] → Start[i+1]) within
     each subject for each annotation class.
 
@@ -698,6 +710,7 @@ def inter_event_intervals(cohort: dict, annot_classes: List[str]) -> dict:
     {class: sorted np.ndarray of IEI values in seconds}
     """
     ieis: Dict[str, list] = {cls: [] for cls in annot_classes}
+    max_secs = None if max_secs is None else max(float(max_secs), 0.0)
 
     for subj in cohort["subjects"]:
         ev = subj["events"]
@@ -711,7 +724,10 @@ def inter_event_intervals(cohort: dict, annot_classes: List[str]) -> dict:
             stops = cls_ev["Stop"].values[:-1]
             starts = cls_ev["Start"].values[1:]
             gaps = starts - stops
-            ieis[cls].extend(gaps[gaps > 0].tolist())
+            gaps = gaps[gaps > 0]
+            if max_secs is not None:
+                gaps = gaps[gaps <= max_secs]
+            ieis[cls].extend(gaps.tolist())
 
     return {cls: np.sort(np.array(v)) for cls, v in ieis.items() if v}
 

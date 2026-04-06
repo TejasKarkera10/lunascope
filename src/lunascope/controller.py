@@ -170,6 +170,7 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         # Single Ctrl+7 dispatcher – toggles whichever dock is active for the mode
         act_7 = QAction("Hypno/Actigraphy (Ctrl+7)", self)
         act_7.setShortcut(QKeySequence("Ctrl+7"))
+        act_7.setShortcutContext(Qt.ApplicationShortcut)
         act_7.triggered.connect(self._toggle_hypno_or_actigraphy)
         self.ui.addAction(act_7)   # attach to window so it fires globally
         self.ui.menuView.addSeparator()

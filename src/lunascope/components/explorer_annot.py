@@ -128,6 +128,14 @@ class AnnotTab(_ExplorerTab):
         spin_gap.setSuffix(" s"); spin_gap.setDecimals(0); spin_gap.setFixedWidth(72)
         spin_gap.setToolTip("Gap between subjects in raster (seconds)")
 
+        spin_flank = QDoubleSpinBox(); spin_flank.setRange(0, 3600); spin_flank.setValue(0)
+        spin_flank.setSuffix(" s"); spin_flank.setDecimals(0); spin_flank.setFixedWidth(80)
+        spin_flank.setToolTip("Expand each event by ±N seconds before overlap calculation")
+
+        spin_maxdist = QDoubleSpinBox(); spin_maxdist.setRange(1, 86400); spin_maxdist.setValue(3600)
+        spin_maxdist.setSuffix(" s"); spin_maxdist.setDecimals(0); spin_maxdist.setFixedWidth(88)
+        spin_maxdist.setToolTip("Ignore nearest-neighbour / IEI values beyond this many seconds")
+
         combo_anchor = QComboBox(); combo_anchor.setFixedWidth(64)
         combo_anchor.addItem("Start", "start")
         combo_anchor.addItem("Mid",   "mid")
@@ -145,6 +153,8 @@ class AnnotTab(_ExplorerTab):
         lbl_anchor   = QLabel("Anchor:")
         lbl_tgt_mode = QLabel("Target:")
         lbl_gap      = QLabel("Gap:")
+        lbl_flank    = QLabel("Flank:")
+        lbl_maxdist  = QLabel("Max:")
 
         rl2.addWidget(QLabel("Ref:")); rl2.addWidget(combo_ref, 1)
         rl2.addWidget(QLabel("±")); rl2.addWidget(spin_win)
@@ -152,6 +162,8 @@ class AnnotTab(_ExplorerTab):
         rl2.addWidget(lbl_anchor);   rl2.addWidget(combo_anchor)
         rl2.addWidget(lbl_tgt_mode); rl2.addWidget(combo_tgt_mode)
         rl2.addWidget(lbl_gap);      rl2.addWidget(spin_gap)
+        rl2.addWidget(lbl_flank);    rl2.addWidget(spin_flank)
+        rl2.addWidget(lbl_maxdist);  rl2.addWidget(spin_maxdist)
         rl2.addStretch(1)
 
         # ---- class list (left) + canvas (right) -----------------------
@@ -203,11 +215,15 @@ class AnnotTab(_ExplorerTab):
         self._spin_win      = spin_win
         self._spin_bin      = spin_bin
         self._spin_gap      = spin_gap
+        self._spin_flank    = spin_flank
+        self._spin_maxdist  = spin_maxdist
         self._combo_anchor  = combo_anchor
         self._combo_tgt_mode= combo_tgt_mode
         self._lbl_anchor    = lbl_anchor
         self._lbl_tgt_mode  = lbl_tgt_mode
         self._lbl_gap       = lbl_gap
+        self._lbl_flank     = lbl_flank
+        self._lbl_maxdist   = lbl_maxdist
         self._list_cls      = list_cls
 
         # ---- wire signals ---------------------------------------------
@@ -220,6 +236,8 @@ class AnnotTab(_ExplorerTab):
         spin_win.valueChanged.connect(self._schedule_render)
         spin_bin.valueChanged.connect(self._schedule_render)
         spin_gap.valueChanged.connect(self._schedule_render)
+        spin_flank.valueChanged.connect(self._schedule_render)
+        spin_maxdist.valueChanged.connect(self._schedule_render)
         combo_anchor.currentIndexChanged.connect(self._schedule_render)
         combo_tgt_mode.currentIndexChanged.connect(self._schedule_render)
 
@@ -255,12 +273,18 @@ class AnnotTab(_ExplorerTab):
         view = self._combo_view.currentData()
         is_peth   = (view == "peth")
         is_raster = (view == "raster")
+        is_overlap = (view == "overlap")
+        is_dist = view in ("nearest", "iei")
         self._lbl_anchor.setVisible(is_peth)
         self._combo_anchor.setVisible(is_peth)
         self._lbl_tgt_mode.setVisible(is_peth)
         self._combo_tgt_mode.setVisible(is_peth)
         self._lbl_gap.setVisible(is_raster)
         self._spin_gap.setVisible(is_raster)
+        self._lbl_flank.setVisible(is_overlap)
+        self._spin_flank.setVisible(is_overlap)
+        self._lbl_maxdist.setVisible(is_dist)
+        self._spin_maxdist.setVisible(is_dist)
         self._schedule_render()
 
     # ------------------------------------------------------------------
@@ -375,12 +399,14 @@ class AnnotTab(_ExplorerTab):
         window     = float(self._spin_win.value())
         bin_s      = float(self._spin_bin.value())
         gap        = float(self._spin_gap.value())
+        flank_s    = float(self._spin_flank.value())
+        max_dist_s = float(self._spin_maxdist.value())
         ref_anchor = self._combo_anchor.currentData()
         tgt_mode   = self._combo_tgt_mode.currentData()
 
         fut = self.ctrl._exec.submit(
             self._analyze_worker, cohort, view, checked, ref, window, bin_s, gap,
-            ref_anchor, tgt_mode)
+            flank_s, max_dist_s, ref_anchor, tgt_mode)
         def _done(_f=fut):
             try:
                 self._sig_ok.emit({"type": "render", "result": _f.result()})
@@ -390,6 +416,7 @@ class AnnotTab(_ExplorerTab):
 
     @staticmethod
     def _analyze_worker(cohort, view, checked, ref, window, bin_s, gap,
+                        flank_s, max_dist_s,
                         ref_anchor="mid", tgt_mode="span"):
         colors = {
             cls: ANNOT_PALETTE[cohort["annot_classes"].index(cls) % len(ANNOT_PALETTE)]
@@ -402,10 +429,10 @@ class AnnotTab(_ExplorerTab):
             data = peri_event_histogram(cohort, ref, targets, window, bin_s,
                                         ref_anchor=ref_anchor, target_mode=tgt_mode)
         elif view == "overlap":
-            data = overlap_matrix(cohort, checked, bin_secs=bin_s)
+            data = overlap_matrix(cohort, checked, bin_secs=bin_s, flank_secs=flank_s)
         elif view == "nearest":
             targets = [c for c in checked if c != ref]
-            data = nearest_neighbor_distances(cohort, ref, targets)
+            data = nearest_neighbor_distances(cohort, ref, targets, max_secs=max_dist_s)
         elif view == "raster":
             data = event_raster_data(cohort, checked, gap_secs=gap)
         elif view == "occupancy":
@@ -413,11 +440,12 @@ class AnnotTab(_ExplorerTab):
         elif view == "duration":
             data = duration_stats(cohort, checked)
         elif view == "iei":
-            data = inter_event_intervals(cohort, checked)
+            data = inter_event_intervals(cohort, checked, max_secs=max_dist_s)
         else:
             data = {}
         return {"view": view, "data": data, "colors": colors,
-                "checked": checked, "ref": ref, "window": window, "bin_s": bin_s}
+                "checked": checked, "ref": ref, "window": window, "bin_s": bin_s,
+                "flank_s": flank_s, "max_dist_s": max_dist_s}
 
     # ------------------------------------------------------------------
     # Done callbacks
@@ -499,12 +527,14 @@ class AnnotTab(_ExplorerTab):
         d  = result["data"]
         c  = result["colors"]
         ref = result["ref"]
+        flank_s = result.get("flank_s", 0.0)
+        max_dist_s = result.get("max_dist_s", 3600.0)
         if vm == "peth":
             self._render_peth(d, c, ref)
         elif vm == "overlap":
-            self._render_overlap(d)
+            self._render_overlap(d, flank_s)
         elif vm == "nearest":
-            self._render_nearest(d, c, ref)
+            self._render_nearest(d, c, ref, max_dist_s)
         elif vm == "raster":
             self._render_raster(d, c)
         elif vm == "occupancy":
@@ -512,7 +542,7 @@ class AnnotTab(_ExplorerTab):
         elif vm == "duration":
             self._render_duration(d, c)
         elif vm == "iei":
-            self._render_iei(d, c)
+            self._render_iei(d, c, max_dist_s)
 
     # ------------------------------------------------------------------
     # Render: peri-event
@@ -570,7 +600,7 @@ class AnnotTab(_ExplorerTab):
     # Render: overlap matrix
     # ------------------------------------------------------------------
 
-    def _render_overlap(self, data):
+    def _render_overlap(self, data, flank_s=0.0):
         from matplotlib.colors import LinearSegmentedColormap
         canvas = self._ensure_canvas()
         fig = canvas.figure; fig.clear(); fig.patch.set_facecolor(BG)
@@ -607,20 +637,23 @@ class AnnotTab(_ExplorerTab):
                 labelcolor=FG, labelsize=7)
         _hmap(ax1, jaccard, "Jaccard similarity")
         _hmap(ax2, directed, "P(col | row)")
-        fig.suptitle("Annotation overlap matrix", color=FG, fontsize=10, y=0.97)
+        flank_lbl = f"  |  flank = +/-{flank_s:.0f} s" if flank_s > 0 else ""
+        fig.suptitle(f"Annotation overlap matrix{flank_lbl}", color=FG, fontsize=10, y=0.97)
         canvas.draw()
 
     # ------------------------------------------------------------------
     # Render: nearest-neighbour CDFs
     # ------------------------------------------------------------------
 
-    def _render_nearest(self, data, colors, ref_class):
+    def _render_nearest(self, data, colors, ref_class, max_dist_s=3600.0):
         canvas = self._ensure_canvas()
         self._set_canvas_height(min_height=420)
         fig = canvas.figure; fig.clear(); fig.patch.set_facecolor(BG)
         non_empty = {cls: arr for cls, arr in data.items() if len(arr) > 0}
         if not non_empty:
-            self._render_empty(f"No nearest-neighbour data for  '{ref_class}'."); return
+            self._render_empty(
+                f"No nearest-neighbour data for  '{ref_class}'.\nWithin max = {max_dist_s:.0f} s."
+            ); return
         ax = fig.add_subplot(111); self._style_ax(ax)
         ax.set_facecolor(BG)
         all_vals = np.concatenate(list(non_empty.values()))
@@ -634,7 +667,10 @@ class AnnotTab(_ExplorerTab):
         ax.set_xlim(0, x_max); ax.set_ylim(0, 1.02)
         ax.set_xlabel("Distance to nearest event (s)", color=FG, fontsize=9)
         ax.set_ylabel("Cumulative fraction", color=FG, fontsize=9)
-        ax.set_title(f"Nearest-neighbour CDF  |  ref: {ref_class}", color=FG, fontsize=10)
+        ax.set_title(
+            f"Nearest-neighbour CDF  |  ref: {ref_class}  |  max: {max_dist_s:.0f} s",
+            color=FG, fontsize=10
+        )
         ax.grid(True, color=GRID, lw=0.5)
         leg = ax.legend(fontsize=8, framealpha=0.3, facecolor="#1a1a1a", edgecolor=GRID)
         for t in leg.get_texts(): t.set_color(FG)
@@ -812,13 +848,15 @@ class AnnotTab(_ExplorerTab):
     # Render: IEI
     # ------------------------------------------------------------------
 
-    def _render_iei(self, data, colors):
+    def _render_iei(self, data, colors, max_dist_s=3600.0):
         canvas = self._ensure_canvas()
         self._set_canvas_height(min_height=420)
         fig = canvas.figure; fig.clear(); fig.patch.set_facecolor(BG)
         non_empty = {cls: arr for cls, arr in data.items() if len(arr) > 0}
         if not non_empty:
-            self._render_empty("No IEI data.\nEach class needs ≥2 consecutive events."); return
+            self._render_empty(
+                f"No IEI data.\nEach class needs >=2 consecutive events within {max_dist_s:.0f} s."
+            ); return
         ax = fig.add_subplot(111); self._style_ax(ax)
         for cls, ieis in non_empty.items():
             col = colors.get(cls, "#aaaaaa"); n = len(ieis)
@@ -829,7 +867,10 @@ class AnnotTab(_ExplorerTab):
         ax.set_xscale("log"); ax.set_ylim(0, 1.02)
         ax.set_xlabel("Inter-event interval (s)", color=FG, fontsize=9)
         ax.set_ylabel("Cumulative fraction", color=FG, fontsize=9)
-        ax.set_title("Inter-event interval CDF", color=FG, fontsize=10, pad=6)
+        ax.set_title(
+            f"Inter-event interval CDF  |  max: {max_dist_s:.0f} s",
+            color=FG, fontsize=10, pad=6
+        )
         ax.grid(True, color=GRID, lw=0.5)
         leg = ax.legend(fontsize=8, framealpha=0.3, facecolor="#1a1a1a", edgecolor=GRID)
         for t in leg.get_texts(): t.set_color(FG)

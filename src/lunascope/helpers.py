@@ -202,7 +202,7 @@ def add_dock_shortcuts(win, view_menu):
         elif act.text() == "(6) Spectrograms":
             act.setShortcut("Ctrl+6")
         elif act.text() == "(7) Hypnograms":
-            act.setShortcut("Ctrl+7")
+            act.setShortcut("")
         elif act.text() == "(8) Console":
             act.setShortcut("Ctrl+8")
         elif act.text() == "(9) Outputs":

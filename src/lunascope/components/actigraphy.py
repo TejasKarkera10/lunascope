@@ -449,11 +449,11 @@ class ActigraphyMixin:
 
         if getattr(self, "multiday_mode", False):
             hyp_action.setShortcut(QKeySequence())
-            act_action.setShortcut(QKeySequence("Ctrl+7"))
+            act_action.setShortcut(QKeySequence())
             self.ui.dock_hypno.hide()
         else:
             act_action.setShortcut(QKeySequence())
-            hyp_action.setShortcut(QKeySequence("Ctrl+7"))
+            hyp_action.setShortcut(QKeySequence())
 
     def _actigraphy_context_menu(self, pos):
         self._ensure_actigraphy_canvas()
