@@ -27,6 +27,7 @@ from PySide6.QtCore import QSignalBlocker
 
 from .tbl_funcs import set_filter_for_channel
 from ..helpers import override_colors
+from ..file_dialogs import open_file_name
 
 # helper to parse and store cmaps
 
@@ -736,12 +737,11 @@ class CMapsMixin:
 
     
     def _load_palette(self):
-        txt_file, _ = QFileDialog.getOpenFileName(
+        txt_file, _ = open_file_name(
             self.ui,
             "Open color map",
             "",
-            "Text (*.txt *.map *.pal);;All Files (*)",
-            options=QFileDialog.Option.DontUseNativeDialog
+            "Text (*.txt *.map *.pal);;All Files (*)"
         )
 
         if txt_file:

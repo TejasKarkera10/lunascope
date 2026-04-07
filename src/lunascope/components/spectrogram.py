@@ -27,6 +27,7 @@ from lunascope.helpers import winsorize_array
 
 from PySide6.QtWidgets import QVBoxLayout, QMessageBox
 from PySide6 import QtCore, QtWidgets, QtGui
+from ..file_dialogs import save_file_name
 
 from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtCore import QMetaObject, Q_ARG, Qt, Slot
@@ -160,7 +161,7 @@ class SpecMixin:
         
     def _spec_save_figure(self):
         self._ensure_spectrogram_canvas()
-        fn, _ = QtWidgets.QFileDialog.getSaveFileName(
+        fn, _ = save_file_name(
             self.spectrogramcanvas,
             "Save Figure",
             "spectrogram",

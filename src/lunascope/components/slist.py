@@ -33,6 +33,7 @@ import numpy as np
 from pandas.api.types import is_numeric_dtype, is_integer_dtype
 
 from .tbl_funcs import attach_comma_filter
+from ..file_dialogs import existing_directory, open_file_name
 
 
 class NumericSortFilterProxy(QSortFilterProxyModel):
@@ -199,12 +200,11 @@ class SListMixin:
         
     def open_file(self):
 
-        slist, _ = QFileDialog.getOpenFileName(
+        slist, _ = open_file_name(
             self.ui,
             "Open sample-list file",
             "",
             "slist (*.lst *.txt);;All Files (*)",
-            options=QFileDialog.Option.DontUseNativeDialog
         )
 
         # set the path , i.e. to handle relative sample lists
@@ -216,34 +216,42 @@ class SListMixin:
         self._read_slist_from_file( slist )
 
 
+    def _apply_sample_list_df(self, df, label: str):
+        model = self.df_to_model(df)
+        self._proxy.setSourceModel(model)
+
+        view = self.ui.tbl_slist
+        h = view.horizontalHeader()
+        h.setSectionResizeMode(QHeaderView.Interactive)
+        h.setStretchLastSection(False)
+        view.resizeColumnsToContents()
+        view.setSelectionBehavior(QAbstractItemView.SelectRows)
+        view.setSelectionMode(QAbstractItemView.SingleSelection)
+        view.verticalHeader().setVisible(True)
+        self.ui.lbl_slist.setText(label)
+
+
+    def _build_slist_from_folder(self, folder: str):
+        if not folder:
+            return
+        self.proj.build(folder)
+        df = self.proj.sample_list()
+        self._apply_sample_list_df(df, folder)
+
+
     # ------------------------------------------------------------
     # Build slist from a folder
     # ------------------------------------------------------------
 
     def _read_slist_from_file( self, slist : str ):
         if slist:
-            # load sample list into luna
-            self.proj.sample_list( slist )
+            try:
+                self.proj.sample_list(slist)
+                df = self.proj.sample_list()
+            except Exception as e:
+                raise RuntimeError(f"Could not load sample list '{slist}': {e}") from e
 
-            # get the SL
-            df = self.proj.sample_list()
-
-            # assgin to model
-            model = self.df_to_model( df )              
-            self._proxy.setSourceModel(model)
-
-            # display options resize
-            view = self.ui.tbl_slist
-#            view.setSortingEnabled(True)
-            h = view.horizontalHeader()
-            h.setSectionResizeMode(QHeaderView.Interactive)  # user-resizable
-            h.setStretchLastSection(False)                   # no auto-stretch fighting you
-            view.resizeColumnsToContents()  
-            view.setSelectionBehavior(QAbstractItemView.SelectRows)
-            view.setSelectionMode(QAbstractItemView.SingleSelection)
-            view.verticalHeader().setVisible(True)
-            # update label to show slist file
-            self.ui.lbl_slist.setText( slist )
+            self._apply_sample_list_df(df, slist)
 
             
     # ------------------------------------------------------------
@@ -252,34 +260,11 @@ class SListMixin:
         
     def open_folder(self):
 
-        folder = QFileDialog.getExistingDirectory( self.ui , "Select Folder", QDir.currentPath(),
-                                                   options=QFileDialog.Option.DontUseNativeDialog )
+        folder = existing_directory(self.ui, "Select Folder", QDir.currentPath())
 
         # update
         if folder != "":
-
-            # build SL
-            self.proj.build( folder )
-
-            # get the SL
-            df = self.proj.sample_list()
-
-            # assgin to model
-            model = self.df_to_model( df )              
-            self._proxy.setSourceModel(model)
-
-            # display options resize
-            view = self.ui.tbl_slist
-#            view.setSortingEnabled(True)
-            h = view.horizontalHeader()
-            h.setSectionResizeMode(QHeaderView.Interactive)  # user-resizable
-            h.setStretchLastSection(False)                   # no auto-stretch fighting you
-            view.resizeColumnsToContents()  
-            view.setSelectionBehavior(QAbstractItemView.SelectRows)
-            view.setSelectionMode(QAbstractItemView.SingleSelection)
-            view.verticalHeader().setVisible(True)
-            # update label to show slist file
-            self.ui.lbl_slist.setText( folder )
+            self._build_slist_from_folder(folder)
 
             
     # ------------------------------------------------------------
@@ -290,12 +275,11 @@ class SListMixin:
         
         
         if edf_file is None:
-            edf_file , _ = QFileDialog.getOpenFileName(
+            edf_file , _ = open_file_name(
                 self.ui,
                 "Open EDF file",
                 "",
                 "EDF (*.edf *.rec);;All Files (*)",
-                options=QFileDialog.Option.DontUseNativeDialog
             )
 
         # update
@@ -384,12 +368,11 @@ class SListMixin:
     def open_annot(self,  annot_file = None ):
 
         if annot_file is None:
-            annot_file , _ = QFileDialog.getOpenFileName(
+            annot_file , _ = open_file_name(
                 self.ui,
                 "Open annotation file",
                 "",
                 "EDF (*.annot *.eannot *.xml *.tsv *.txt);;All Files (*)",
-            options=QFileDialog.Option.DontUseNativeDialog
             )
 
         # update

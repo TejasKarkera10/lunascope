@@ -29,7 +29,7 @@ import os, sys, threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
-from PySide6.QtCore import QModelIndex, QObject, Signal, Qt, QSortFilterProxyModel
+from PySide6.QtCore import QModelIndex, QObject, Signal, Qt, QSortFilterProxyModel, QEvent
 from PySide6.QtGui import QAction, QStandardItemModel
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDockWidget, QLabel, QFrame, QSizePolicy, QMessageBox, QLayout
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import QMainWindow, QProgressBar, QTableView, QAbstractIt
 from PySide6.QtWidgets import QFileDialog
 from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
 from PySide6.QtGui import QKeySequence, QGuiApplication
+from .file_dialogs import open_file_name, save_file_name
 
 import pyqtgraph as pg
 
@@ -54,12 +55,14 @@ from .components.ctree import CTreeMixin
 from .components.spectrogram import SpecMixin
 from .components.actigraphy import ActigraphyMixin
 from .components.soappops import SoapPopsMixin
+from .components.tutorial import TutorialMixin
 from .components.cmaps import CMapsMixin
 from .components.results_io import ResultsIOMixin
 from .components.moonbeam_dock import MoonbeamMixin
 from .components.explorer_dock import ExplorerMixin
 from .gui_help import apply_gui_help, set_render_button_help
-from .session_state import save_session_file, load_session_file
+from .session_state import save_session_file, load_session_file, save_geometry_file, load_geometry_file
+from .runtime_paths import app_state_file
 
 
 # ------------------------------------------------------------
@@ -74,9 +77,13 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
                   AnalMixin , SignalsMixin,
                   SettingsMixin, CTreeMixin ,
                   SpecMixin , ActigraphyMixin, MasksMixin,
-                  MoonbeamMixin, ExplorerMixin ):
+                  MoonbeamMixin, ExplorerMixin, TutorialMixin ):
 
     sig_results_changed = Signal()   # emitted whenever self.results is repopulated
+    sig_proj_eval_stream = Signal(str)
+    sig_proj_eval_progress = Signal(int, int)
+    sig_proj_eval_finished = Signal(object)
+    sig_proj_eval_failed = Signal(str)
 
     def __init__(self, ui, proj):
 
@@ -92,6 +99,8 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         self._exec = ThreadPoolExecutor(max_workers=1)
         self._busy = False
         self.blocker = Blocker(self.ui, "...Processing...\n...please wait...", alpha=120)
+        self._geometry_cache_saved = False
+        self.ui.installEventFilter(self)
 
         # initiate each component
         self._init_colors()
@@ -125,7 +134,8 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         act_save_session = QAction("Save Session...", self)
         act_load_session = QAction("Load Session...", self)
         act_download_pops = QAction("Download POPS Resources...", self)
-        
+        act_download_tutorial = QAction("Download Tutorial...", self)
+
         # connect to same slots as buttons
         act_load_slist.triggered.connect(self.open_file)
         act_build_slist.triggered.connect(self.open_folder)
@@ -136,6 +146,8 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         act_save_session.triggered.connect(self._save_session_state)
         act_load_session.triggered.connect(self._load_session_state)
         act_download_pops.triggered.connect(self._download_pops_resources)
+        act_download_tutorial.triggered.connect(self._download_tutorial)
+        self._act_proj_eval = act_proj_eval
 
         self.ui.menuProject.addAction(act_load_slist)
         self.ui.menuProject.addAction(act_build_slist)
@@ -150,6 +162,7 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         self.ui.menuProject.addAction(act_save_session)
         self.ui.menuProject.addAction(act_load_session)
         self.ui.menuProject.addAction(act_download_pops)
+        self.ui.menuProject.addAction(act_download_tutorial)
 
         # set up menu items: viewing
         self.ui.menuView.addAction(self.ui.dock_slist.toggleViewAction())
@@ -222,6 +235,7 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
             "project_save_session": act_save_session,
             "project_load_session": act_load_session,
             "project_download_pops": act_download_pops,
+            "project_download_tutorial": act_download_tutorial,
             "about_help": act_about,
             "palette_spectrum": act_pal_spectrum,
             "palette_white": act_pal_white,
@@ -271,7 +285,17 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         layout2.addWidget(splitter2)
 
         # short keyboard cuts
-        add_dock_shortcuts( self.ui, self.ui.menuView )
+        add_dock_shortcuts( self.ui, self.ui.menuView, self._toggle_signals_only_or_default )
+
+        # size overall app window – cap to available screen space
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            win_w = min(1200, int(avail.width()  * 0.92))
+            win_h = min(800,  int(avail.height() * 0.92))
+        else:
+            win_w, win_h = 1200, 800
+        self.ui.resize(win_w, win_h)
 
         # arrange docks: hide some docks
         self.ui.dock_help.hide()
@@ -285,12 +309,20 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         # arrange docks: lock and resize
         self.ui.setCorner(Qt.TopRightCorner,    Qt.RightDockWidgetArea)
         self.ui.setCorner(Qt.BottomRightCorner, Qt.RightDockWidgetArea)
-        
-        # arrange docks: lower docks (console, outputs)
+
+        # Use relative defaults so the center signal viewer keeps a similar
+        # proportion across lower-resolution Windows and higher-resolution macOS displays.
         w = self.ui.width()
+        h = self.ui.height()
+        left_w  = max(220, int(w * 0.20))
+        right_w = max(220, int(w * 0.20))
+        bottom_left_w  = max(220, int(w * 0.60))
+        bottom_right_w = max(180, w - bottom_left_w)
+
+        # arrange docks: lower docks (console, outputs)
         self.ui.resizeDocks(
             [self.ui.dock_console, self.ui.dock_outputs],
-            [int(w * 0.6), int(w * 0.4)],
+            [bottom_left_w, bottom_right_w],
             Qt.Horizontal
         )
 
@@ -306,7 +338,6 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         self.ui.dock_spectrogram.raise_()
 
         # arrange docks: right docks (signals, annotations, events)
-        h = self.ui.height()
         self.ui.resizeDocks(
             [self.ui.dock_sig, self.ui.dock_annot, self.ui.dock_annots, self.ui.dock_mask],
             [int(h * 0.35), int(h * 0.25), int(h * 0.1), int(h * 0.1)],
@@ -314,10 +345,9 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         )
 
         # adjust overall left vs right width
-        w_right = 720
         self.ui.resizeDocks(
             [self.ui.dock_slist, self.ui.dock_sig],
-            [self.ui.width() - w_right, w_right],
+            [left_w, right_w],
             Qt.Horizontal
         )
 
@@ -334,6 +364,7 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         self.ui.dock_explorer.hide()
         self.ui.dock_explorer.setFloating(True)
         self.ui.dock_spectrogram.widget().setMinimumHeight(240)
+        self._capture_default_dock_layout()
         
         # ------------------------------------------------------------
         # set up status bar
@@ -380,19 +411,6 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
 
         self.sb_mode.setMinimumWidth(120)
         self._update_mode_badge()
-
-
-        # ------------------------------------------------------------
-        # size overall app window – cap to available screen space
-
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            avail = screen.availableGeometry()
-            win_w = min(1200, int(avail.width()  * 0.92))
-            win_h = min(800,  int(avail.height() * 0.92))
-        else:
-            win_w, win_h = 1200, 800
-        self.ui.resize(win_w, win_h)
 
         # On Windows set a modest monospace font size for the text-edit panels
         # so they don't appear oversized on lower-resolution / non-HiDPI screens.
@@ -453,6 +471,53 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         self._clear_all()
         self.proj.clear_vars()
         self.proj.reinit()
+        if hasattr(self, "p"):
+            del self.p
+
+    def _detach_inst_preserve_analysis(self):
+        if getattr(self, "events_table_proxy", None) is not None:
+            clear_rows(self.events_table_proxy)
+        if getattr(self, "signals_table_proxy", None) is not None:
+            clear_rows(self.signals_table_proxy)
+        if getattr(self, "annots_table_proxy", None) is not None:
+            clear_rows(self.annots_table_proxy)
+
+        self.ui.combo_spectrogram.clear()
+        self.ui.combo_actigraphy.clear()
+        self.ui.combo_pops.clear()
+        self.ui.combo_soap.clear()
+
+        if getattr(self, "spectrogramcanvas", None) is not None:
+            self.spectrogramcanvas.ax.cla()
+            self.spectrogramcanvas.figure.canvas.draw_idle()
+        if getattr(self, "hypnocanvas", None) is not None:
+            self.hypnocanvas.ax.cla()
+            self.hypnocanvas.figure.canvas.draw_idle()
+        if getattr(self, "actigraphycanvas", None) is not None:
+            self.actigraphycanvas.ax.cla()
+            self.actigraphycanvas.figure.canvas.draw_idle()
+        if getattr(self, "soapcanvas", None) is not None:
+            self.soapcanvas.ax.cla()
+            self.soapcanvas.figure.canvas.draw_idle()
+
+        self.multiday_mode = False
+        if hasattr(self, "_update_mode_badge"):
+            self._update_mode_badge()
+        if hasattr(self, "_sync_multiday_actigraphy_dock"):
+            self._sync_multiday_actigraphy_dock()
+        self._detach_actigraphy_dock_from_main_layout()
+        self._set_render_status(False, False)
+
+        self.proj.clear_vars()
+        self.proj.reinit()
+        if hasattr(self, "p"):
+            del self.p
+
+        try:
+            self.ui.tbl_slist.clearSelection()
+            self.ui.tbl_slist.setCurrentIndex(QModelIndex())
+        except Exception:
+            pass
             
     # ------------------------------------------------------------
     # attach a new record
@@ -497,7 +562,7 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
             if ext.lower() == ".edf":
                 edf_file = f"{base}-edit.edf"
             else:
-                edf_file = f"{path}-edit.edf"
+                edf_file = f"{base}-edit.edf"
 
             reply = QMessageBox.question(
                 self.ui,
@@ -701,12 +766,11 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         box.exec()
 
     def _save_session_state(self):
-        filename, _ = QFileDialog.getSaveFileName(
+        filename, _ = save_file_name(
             self.ui,
             "Save Session",
             "",
             "Lunascope Session (*.lss);;JSON (*.json);;All Files (*)",
-            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if not filename:
             return
@@ -759,12 +823,11 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
             return
 
     def _load_session_state(self):
-        filename, _ = QFileDialog.getOpenFileName(
+        filename, _ = open_file_name(
             self.ui,
             "Load Session",
             "",
             "Lunascope Session (*.lss);;JSON (*.json);;All Files (*)",
-            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if not filename:
             return
@@ -845,30 +908,126 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
 
         self._detach_actigraphy_dock_from_main_layout()
 
-        rep = res["report"]
-        has_issues = bool(rep.get("deferred") or rep.get("skipped") or rep.get("missing"))
-        details = []
         if slist_load_note and ("missing:" in slist_load_note or "error:" in slist_load_note):
-            details.append(f"Session project context: {slist_load_note}")
-        if rep.get("deferred_items"):
-            details.append("Deferred items:")
-            details.extend(f"  - {x}" for x in rep["deferred_items"][:20])
-        if rep.get("skipped_items"):
-            details.append("Skipped items:")
-            details.extend(f"  - {x}" for x in rep["skipped_items"][:20])
-        if rep.get("missing_items"):
-            details.append("Missing items:")
-            details.extend(f"  - {x}" for x in rep["missing_items"][:20])
-        details_text = ("\n\n" + "\n".join(details)) if details else ""
-
-        if has_issues or details:
-            QMessageBox.information(
+            QMessageBox.warning(
                 self.ui,
-                "Session Loaded",
-                f"Loaded session:\n{res['path']}\n\n"
-                f"Restored: {rep['restored']}\n"
-                f"Deferred: {rep.get('deferred', 0)}\n"
-                f"Skipped: {rep['skipped']}\n"
-                f"Missing: {rep['missing']}"
-                f"{details_text}",
+                "Session Loaded With Warning",
+                f"Loaded session, but project context was not fully restored.\n\n{slist_load_note}",
             )
+
+    def _geometry_cache_path(self) -> Path:
+        return app_state_file("window_geometry.json")
+
+    def _capture_default_dock_layout(self):
+        try:
+            self._default_window_geometry_b64 = self.ui.saveGeometry()
+        except Exception:
+            self._default_window_geometry_b64 = None
+        try:
+            self._default_window_state_b64 = self.ui.saveState()
+        except Exception:
+            self._default_window_state_b64 = None
+
+    def _signals_only_mode_active(self):
+        try:
+            return (
+                not self.ui.dock_slist.isVisible()
+                and not self.ui.dock_settings.isVisible()
+                and not self.ui.dock_sig.isVisible()
+                and not self.ui.dock_annot.isVisible()
+                and not self.ui.dock_annots.isVisible()
+            )
+        except Exception:
+            return False
+
+    def _show_signals_only_layout(self):
+        for dock in (
+            self.ui.dock_slist,
+            self.ui.dock_settings,
+            self.ui.dock_sig,
+            self.ui.dock_annot,
+            self.ui.dock_annots,
+            self.ui.dock_spectrogram,
+            self.ui.dock_hypno,
+            self.ui.dock_actigraphy,
+            self.ui.dock_mask,
+            self.ui.dock_console,
+            self.ui.dock_outputs,
+            self.ui.dock_help,
+        ):
+            dock.hide()
+        self.ui.dock_explorer.hide()
+
+    def _restore_default_dock_layout(self):
+        try:
+            if getattr(self, "_default_window_geometry_b64", None) is not None:
+                self.ui.restoreGeometry(self._default_window_geometry_b64)
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_default_window_state_b64", None) is not None:
+                self.ui.restoreState(self._default_window_state_b64)
+        except Exception:
+            pass
+
+        for dock in (
+            self.ui.dock_slist,
+            self.ui.dock_settings,
+            self.ui.dock_sig,
+            self.ui.dock_annot,
+            self.ui.dock_annots,
+        ):
+            dock.show()
+
+        for dock in (
+            self.ui.dock_spectrogram,
+            self.ui.dock_hypno,
+            self.ui.dock_actigraphy,
+            self.ui.dock_mask,
+            self.ui.dock_console,
+            self.ui.dock_outputs,
+            self.ui.dock_help,
+        ):
+            dock.hide()
+
+        self.ui.dock_explorer.hide()
+        self.ui.dock_explorer.setFloating(True)
+        self._detach_actigraphy_dock_from_main_layout()
+
+    def _toggle_signals_only_or_default(self):
+        if self._signals_only_mode_active():
+            self._restore_default_dock_layout()
+        else:
+            self._show_signals_only_layout()
+
+    def save_geometry_cache_silently(self):
+        try:
+            save_geometry_file(
+                self._geometry_cache_path(),
+                self.ui,
+                app_meta={"lunascope_version": __version__},
+            )
+            self._geometry_cache_saved = True
+        except Exception:
+            pass
+
+    def load_geometry_cache_silently(self):
+        try:
+            p = self._geometry_cache_path()
+            if p.is_file():
+                load_geometry_file(p, self.ui)
+                self._detach_actigraphy_dock_from_main_layout()
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, event):
+        try:
+            if obj is self.ui and event.type() == QEvent.Close and not self._geometry_cache_saved:
+                self.save_geometry_cache_silently()
+        except RuntimeError:
+            return False
+
+        try:
+            return super().eventFilter(obj, event)
+        except RuntimeError:
+            return False

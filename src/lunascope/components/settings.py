@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QVBoxLayout, QHeaderView
 from PySide6.QtWidgets import QMessageBox
 
 import pandas as pd
+from ..file_dialogs import open_file_name, save_file_name
 
 
 def _append_selected_extension(filename: str, selected_filter: str, allowed_exts: tuple[str, ...]) -> str:
@@ -97,20 +98,18 @@ class SettingsMixin:
         is_cmap = name == 'Config'
 
         if is_cmap is False:
-            txt_file, _ = QFileDialog.getOpenFileName(
+            txt_file, _ = open_file_name(
                 self.ui,
                 "Open a parameter file",
                 "",
-                "Param Files (*.txt *.par *);;All Files (*)",
-                options=QFileDialog.Option.DontUseNativeDialog
+                "Param Files (*.txt *.par *);;All Files (*)"
             )
         else:
-            txt_file, _ = QFileDialog.getOpenFileName(
+            txt_file, _ = open_file_name(
                 self.ui,
                 "Open a config file",
                 "",
-                "Config Files (*.txt *.cfg *);;All Files (*)",
-                options=QFileDialog.Option.DontUseNativeDialog
+                "Config Files (*.txt *.cfg *);;All Files (*)"
             )
             
         
@@ -146,21 +145,19 @@ class SettingsMixin:
         
         if is_cmap is True:
             new_file = self.ui.txt_cmap.toPlainText()
-            filename, selected_filter = QFileDialog.getSaveFileName(
+            filename, selected_filter = save_file_name(
                 self.ui,
                 "Save file to .cfg",
                 "",
-                "Config Files (*.txt *.cfg *);;All Files (*)",
-                options=QFileDialog.Option.DontUseNativeDialog
+                "Config Files (*.txt *.cfg *);;All Files (*)"
             )            
         else:
             new_file = self.ui.txt_param.toPlainText()            
-            filename, selected_filter = QFileDialog.getSaveFileName(
+            filename, selected_filter = save_file_name(
                 self.ui,
                 "Save file to .par/.txt",
                 "",
-                "Param Files (*.txt *.par *);;All Files (*)",
-                options=QFileDialog.Option.DontUseNativeDialog
+                "Param Files (*.txt *.par *);;All Files (*)"
             )
 
         if filename:

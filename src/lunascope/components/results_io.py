@@ -28,6 +28,7 @@ import pandas as pd
 
 from PySide6.QtCore import Qt, QEvent
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QHeaderView, QToolTip
+from ..file_dialogs import open_file_name, save_file_name
 
 
 class HelpHeaderView(QHeaderView):
@@ -123,12 +124,11 @@ class ResultsIOMixin:
             QMessageBox.information(self.ui, "Nothing to save", "No results to save.")
             return
 
-        filename, selected_filter = QFileDialog.getSaveFileName(
+        filename, selected_filter = save_file_name(
             self.ui,
             "Save Results",
             "",
             "Pickle (*.pkl);;Zip of TSVs (*.zip);;All Files (*)",
-            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if not filename:
             return
@@ -198,12 +198,11 @@ class ResultsIOMixin:
     # Load
 
     def _load_results(self):
-        filename, _ = QFileDialog.getOpenFileName(
+        filename, _ = open_file_name(
             self.ui,
             "Load Results",
             "",
             "Results Files (*.pkl *.zip *.db);;Pickle (*.pkl);;Zip of TSVs (*.zip);;Luna DB (*.db);;All Files (*)",
-            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if not filename:
             return

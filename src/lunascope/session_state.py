@@ -405,3 +405,58 @@ def load_session_file(path: str | Path, ui: QMainWindow) -> dict[str, Any]:
             "missing_items": report.missing_items,
         },
     }
+
+
+def collect_geometry_state(
+    ui: QMainWindow,
+    *,
+    app_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "saved_utc": _now_utc(),
+        "app": app_meta or {},
+        "window": _collect_window(ui),
+        "docks": _collect_docks(ui),
+    }
+
+
+def apply_geometry_state(ui: QMainWindow, state: dict[str, Any]) -> RestoreReport:
+    geometry_only = {
+        "window": state.get("window", {}),
+        "docks": state.get("docks", {}),
+        "widgets": {},
+    }
+    return apply_session_state(ui, geometry_only)
+
+
+def save_geometry_file(
+    path: str | Path,
+    ui: QMainWindow,
+    *,
+    app_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    p = Path(path).expanduser()
+    state = collect_geometry_state(ui, app_meta=app_meta)
+    p.write_text(json.dumps(state, indent=2, ensure_ascii=True), encoding="utf-8")
+    return {"path": str(p), "state": state}
+
+
+def load_geometry_file(path: str | Path, ui: QMainWindow) -> dict[str, Any]:
+    p = Path(path).expanduser()
+    raw = p.read_text(encoding="utf-8")
+    state = json.loads(raw)
+    report = apply_geometry_state(ui, state)
+    return {
+        "path": str(p),
+        "state": state,
+        "report": {
+            "restored": report.restored,
+            "deferred": report.deferred,
+            "skipped": report.skipped,
+            "missing": report.missing,
+            "deferred_items": report.deferred_items,
+            "skipped_items": report.skipped_items,
+            "missing_items": report.missing_items,
+        },
+    }

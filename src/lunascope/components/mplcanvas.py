@@ -35,7 +35,7 @@ class MplCanvas(FigureCanvas):
         self.ax.set_axis_off()                           # no ticks, spines, grid
         self.ax.grid(False)
         fig.patch.set_facecolor("black")                 # extra safety
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(320, 240)
         self.draw()
 

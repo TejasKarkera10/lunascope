@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from .explorer_base import BG, FG, GRID, _ExplorerTab
+from ..file_dialogs import open_file_name, save_file_name
 
 
 # ---------------------------------------------------------------------------
@@ -235,8 +236,8 @@ class HypnoscopeTab(_ExplorerTab):
 
     _ALIGN_OPTS = [
         ("clock",   "Clock time"),
-        ("elapsed", "Elapsed recording"),
-        ("sleep",   "Elapsed sleep"),
+        ("elapsed", "Recording start"),
+        ("sleep",   "Sleep onset"),
     ]
     _SORT_OPTS = [
         ("alpha", "Alphabetical"),
@@ -357,10 +358,8 @@ class HypnoscopeTab(_ExplorerTab):
             QtWidgets.QMessageBox.warning(self._root, "Hypnoscope",
                                           "No data to save. Compile first.")
             return
-        fn, _ = QFileDialog.getSaveFileName(
-            self._root, "Save Hypnoscope Cache", "hypnoscope_cache.tsv",
-            "Hypnoscope cache (*.tsv);;All files (*)"
-        )
+        fn, _ = save_file_name(self._root, "Save Hypnoscope Cache", "hypnoscope_cache.tsv",
+                               "Hypnoscope cache (*.tsv);;All files (*)")
         if fn:
             try:
                 save_hypnoscope_cache(fn, self._data)
@@ -368,10 +367,8 @@ class HypnoscopeTab(_ExplorerTab):
                 QtWidgets.QMessageBox.critical(self._root, "Save error", str(e))
 
     def _load_cache(self):
-        fn, _ = QFileDialog.getOpenFileName(
-            self._root, "Load Hypnoscope Cache", "",
-            "Hypnoscope cache (*.tsv);;All files (*)"
-        )
+        fn, _ = open_file_name(self._root, "Load Hypnoscope Cache", "",
+                               "Hypnoscope cache (*.tsv);;All files (*)")
         if not fn:
             return
         try:

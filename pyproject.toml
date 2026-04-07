@@ -4,11 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lunascope"
-version = "0.9.2"
+version = "0.9.3"
 description = "Sleep-EEG viewer and interface to Luna"
 readme = "README.md"
 requires-python = ">=3.9, <3.15"
 license = {file = "LICENSE"}
+classifiers = [
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+]
 authors = [
   {name = "Lorcan Purcell", email = "lpurcell26@nmhschool.org"  },
   {name = "Shaun Purcell", email = "shaun.purcell@nyspi.columbia.edu"},

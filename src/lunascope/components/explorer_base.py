@@ -12,7 +12,8 @@ import numpy as np
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QFrame, QMenu, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QMenu, QVBoxLayout
+from ..file_dialogs import save_file_name
 
 
 # Shared dark-theme constants used by all tabs
@@ -170,10 +171,8 @@ class _ExplorerTab(QtCore.QObject):
     def _save_figure(self):
         if self._canvas is None:
             return
-        fn, _ = QFileDialog.getSaveFileName(
-            self._root, "Save Figure", "figure",
-            "PNG (*.png);;SVG (*.svg);;PDF (*.pdf)"
-        )
+        fn, _ = save_file_name(self._root, "Save Figure", "figure",
+                               "PNG (*.png);;SVG (*.svg);;PDF (*.pdf)")
         if fn:
             self._canvas.figure.savefig(fn, bbox_inches="tight", facecolor=BG)
 

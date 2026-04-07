@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from .explorer_base import BG, FG, GRID, SEP, _ExplorerTab
+from ..file_dialogs import open_file_name, save_file_name
 from .annot_explorer_funcs import (
     ANNOT_PALETTE,
     compile_cohort,
@@ -141,7 +142,7 @@ class AnnotTab(_ExplorerTab):
         combo_anchor.addItem("Mid",   "mid")
         combo_anchor.addItem("End",   "end")
         combo_anchor.setCurrentIndex(1)
-        combo_anchor.setToolTip("Reference event anchor point (PETH)")
+        combo_anchor.setToolTip("Reference event anchor point")
 
         combo_tgt_mode = QComboBox(); combo_tgt_mode.setFixedWidth(110)
         combo_tgt_mode.addItem("Active span", "span")
@@ -150,28 +151,67 @@ class AnnotTab(_ExplorerTab):
             "Active span: P(target covering lag t) — natural for epoch annotations\n"
             "Onset: rate of target start times at each lag — natural for point events")
 
+        combo_nn_anchor = QComboBox(); combo_nn_anchor.setFixedWidth(64)
+        combo_nn_anchor.addItem("Start", "start")
+        combo_nn_anchor.addItem("Mid",   "mid")
+        combo_nn_anchor.addItem("End",   "end")
+        combo_nn_anchor.setCurrentIndex(1)
+        combo_nn_anchor.setToolTip("Target event anchor point (nearest-neighbour)")
+
+        combo_nn_mode = QComboBox(); combo_nn_mode.setFixedWidth(110)
+        combo_nn_mode.addItem("Absolute", "absolute")
+        combo_nn_mode.addItem("Leading",  "leading")
+        combo_nn_mode.addItem("Lagging",  "lagging")
+        combo_nn_mode.addItem("Signed avg", "signed")
+        combo_nn_mode.setToolTip(
+            "Absolute: nearest target regardless of order\n"
+            "Leading: nearest target before the reference event\n"
+            "Lagging: nearest target after the reference event\n"
+            "Signed avg: nearest target by absolute distance, retaining sign"
+        )
+
         lbl_anchor   = QLabel("Anchor:")
         lbl_tgt_mode = QLabel("Target:")
+        lbl_nn_anchor = QLabel("Other:")
+        lbl_nn_mode   = QLabel("Mode:")
         lbl_gap      = QLabel("Gap:")
         lbl_flank    = QLabel("Flank:")
         lbl_maxdist  = QLabel("Max:")
 
-        rl2.addWidget(QLabel("Ref:")); rl2.addWidget(combo_ref, 1)
-        rl2.addWidget(QLabel("±")); rl2.addWidget(spin_win)
-        rl2.addWidget(QLabel("Bin:")); rl2.addWidget(spin_bin)
+        lbl_ref = QLabel("Ref:")
+        lbl_win = QLabel("±")
+        lbl_bin = QLabel("Bin:")
+
+        rl2.addWidget(lbl_ref); rl2.addWidget(combo_ref, 1)
+        rl2.addWidget(lbl_win); rl2.addWidget(spin_win)
+        rl2.addWidget(lbl_bin); rl2.addWidget(spin_bin)
         rl2.addWidget(lbl_anchor);   rl2.addWidget(combo_anchor)
         rl2.addWidget(lbl_tgt_mode); rl2.addWidget(combo_tgt_mode)
+        rl2.addWidget(lbl_nn_anchor); rl2.addWidget(combo_nn_anchor)
+        rl2.addWidget(lbl_nn_mode);   rl2.addWidget(combo_nn_mode)
         rl2.addWidget(lbl_gap);      rl2.addWidget(spin_gap)
         rl2.addWidget(lbl_flank);    rl2.addWidget(spin_flank)
         rl2.addWidget(lbl_maxdist);  rl2.addWidget(spin_maxdist)
         rl2.addStretch(1)
 
         # ---- class list (left) + canvas (right) -----------------------
+        btn_toggle_all = QPushButton("Clear all")
+        btn_toggle_all.setToolTip("Select or clear all annotation classes")
+        btn_toggle_all.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
         list_cls = QListWidget()
-        list_cls.setMaximumWidth(220)
+        list_cls.setMaximumWidth(260)
         list_cls.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         list_cls.setToolTip("Check/uncheck annotation classes to include")
-        list_cls.itemChanged.connect(self._schedule_render)
+        list_cls.itemChanged.connect(self._on_class_item_changed)
+
+        list_host = QWidget()
+        list_host.setMaximumWidth(260)
+        list_layout = QVBoxLayout(list_host)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(6)
+        list_layout.addWidget(btn_toggle_all)
+        list_layout.addWidget(list_cls, 1)
 
         canvas_host = QFrame()
         canvas_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
@@ -183,9 +223,9 @@ class AnnotTab(_ExplorerTab):
 
         canvas_scroll = QScrollArea()
         canvas_scroll.setFrameShape(QFrame.NoFrame)
-        canvas_scroll.setWidgetResizable(False)
+        canvas_scroll.setWidgetResizable(True)
         canvas_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        canvas_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        canvas_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         canvas_scroll.setAlignment(Qt.AlignTop)
         canvas_scroll.setStyleSheet(
             "QScrollBar:vertical { background:#0d1117; width:12px; margin:0; }"
@@ -200,7 +240,7 @@ class AnnotTab(_ExplorerTab):
         canvas_scroll.viewport().installEventFilter(self)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(list_cls)
+        splitter.addWidget(list_host)
         splitter.addWidget(canvas_scroll)
         splitter.setSizes([200, 1000])
         splitter.setStretchFactor(0, 0); splitter.setStretchFactor(1, 1)
@@ -219,18 +259,27 @@ class AnnotTab(_ExplorerTab):
         self._spin_maxdist  = spin_maxdist
         self._combo_anchor  = combo_anchor
         self._combo_tgt_mode= combo_tgt_mode
+        self._combo_nn_anchor = combo_nn_anchor
+        self._combo_nn_mode   = combo_nn_mode
+        self._lbl_ref       = lbl_ref
+        self._lbl_win       = lbl_win
+        self._lbl_bin       = lbl_bin
         self._lbl_anchor    = lbl_anchor
         self._lbl_tgt_mode  = lbl_tgt_mode
+        self._lbl_nn_anchor = lbl_nn_anchor
+        self._lbl_nn_mode   = lbl_nn_mode
         self._lbl_gap       = lbl_gap
         self._lbl_flank     = lbl_flank
         self._lbl_maxdist   = lbl_maxdist
         self._list_cls      = list_cls
+        self._btn_toggle_all = btn_toggle_all
 
         # ---- wire signals ---------------------------------------------
         btn_compile.clicked.connect(self._compile)
         btn_load.clicked.connect(self._load_cache)
         btn_save.clicked.connect(self._save_cache)
         btn_export.clicked.connect(self._save_figure)
+        btn_toggle_all.clicked.connect(self._toggle_all_annots)
         combo_view.currentIndexChanged.connect(self._on_view_changed)
         combo_ref.currentIndexChanged.connect(self._schedule_render)
         spin_win.valueChanged.connect(self._schedule_render)
@@ -240,30 +289,112 @@ class AnnotTab(_ExplorerTab):
         spin_maxdist.valueChanged.connect(self._schedule_render)
         combo_anchor.currentIndexChanged.connect(self._schedule_render)
         combo_tgt_mode.currentIndexChanged.connect(self._schedule_render)
+        combo_nn_anchor.currentIndexChanged.connect(self._schedule_render)
+        combo_nn_mode.currentIndexChanged.connect(self._schedule_render)
 
         # Set initial visibility
         self._on_view_changed()
 
     def _set_canvas_height(self, nrows: int | None = None, min_height: int | None = None):
-        """Let multi-row plot grids grow vertically and scroll instead of squashing."""
+        """Set canvas height constraints.
+
+        PETH (nrows > 1): canvas is pinned to a computed tall height so the
+        scroll area activates and the user can scroll through all row panels.
+
+        All other views: only a minimum height is set; the canvas is free to
+        expand with the window (widgetResizable=True handles the stretching).
+        """
         canvas = self._ensure_canvas()
         if canvas is None:
             return
+        peth_scroll = (nrows is not None and nrows > 1)
         if min_height is None:
-            if nrows is None or nrows <= 1:
-                min_height = 420
-            else:
+            if peth_scroll:
                 min_height = 120 + (nrows * 260) + ((nrows - 1) * 24)
+            else:
+                min_height = 420
         canvas.setMinimumHeight(min_height)
-        canvas.setMaximumHeight(min_height)
         if self._canvas_host is not None:
             self._canvas_host.setMinimumHeight(min_height)
-            self._canvas_host.setMaximumHeight(min_height)
+        if peth_scroll:
+            # Pin height so the scroll area knows the content is taller than the viewport
+            canvas.setMaximumHeight(min_height)
+            if self._canvas_host is not None:
+                self._canvas_host.setMaximumHeight(min_height)
+        else:
+            # Release the ceiling — let the canvas fill whatever vertical space is available
+            canvas.setMaximumHeight(16_777_215)
+            if self._canvas_host is not None:
+                self._canvas_host.setMaximumHeight(16_777_215)
         self._sync_canvas_width()
 
     def _render_empty(self, msg: str = ""):
         self._set_canvas_height()
         super()._render_empty(msg)
+
+    @staticmethod
+    def _fmt_mean_secs(val: float) -> str:
+        if not np.isfinite(val):
+            return "n/a"
+        sign = "-" if val < 0 else ""
+        abs_v = abs(float(val))
+        if abs_v >= 3600:
+            return f"{sign}{abs_v/3600.0:.2f} h"
+        if abs_v >= 60:
+            return f"{sign}{abs_v/60.0:.2f} m"
+        return f"{sign}{abs_v:.2f} s"
+
+    def _add_mean_box(self, fig, items, *, title="Mean"):
+        if not items:
+            return
+        lines = [title]
+        for cls, mean_v in items:
+            short = cls if len(cls) <= 18 else (cls[:17] + "…")
+            lines.append(f"{short}: {self._fmt_mean_secs(float(mean_v))}")
+        fig.text(
+            0.80, 0.88, "\n".join(lines),
+            ha="left", va="top", color=FG, fontsize=7.5,
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="#111827",
+                      edgecolor=GRID, alpha=0.85)
+        )
+
+    def _update_toggle_all_button(self):
+        btn = getattr(self, "_btn_toggle_all", None)
+        lw = getattr(self, "_list_cls", None)
+        if btn is None or lw is None:
+            return
+        n = lw.count()
+        n_checked = sum(
+            1 for i in range(n)
+            if lw.item(i).checkState() == Qt.Checked
+        )
+        btn.setText("Clear all" if n_checked > 0 else "Select all")
+
+    def _set_all_annots_checked(self, checked: bool):
+        lw = self._list_cls
+        state = Qt.Checked if checked else Qt.Unchecked
+        lw.blockSignals(True)
+        try:
+            for i in range(lw.count()):
+                item = lw.item(i)
+                if item.checkState() != state:
+                    item.setCheckState(state)
+        finally:
+            lw.blockSignals(False)
+        self._update_toggle_all_button()
+        self._schedule_render()
+
+    def _toggle_all_annots(self):
+        lw = self._list_cls
+        any_checked = any(
+            lw.item(i).checkState() == Qt.Checked
+            for i in range(lw.count())
+        )
+        self._set_all_annots_checked(not any_checked)
+
+    def _on_class_item_changed(self, *_):
+        self._update_toggle_all_button()
+        self._schedule_render()
 
     # ------------------------------------------------------------------
     # View-change: show/hide controls that are specific to certain views
@@ -272,13 +403,24 @@ class AnnotTab(_ExplorerTab):
     def _on_view_changed(self, *_):
         view = self._combo_view.currentData()
         is_peth   = (view == "peth")
+        is_nearest = (view == "nearest")
         is_raster = (view == "raster")
         is_overlap = (view == "overlap")
+        is_occupancy = (view == "occupancy")
         is_dist = view in ("nearest", "iei")
-        self._lbl_anchor.setVisible(is_peth)
-        self._combo_anchor.setVisible(is_peth)
+        show_bin = is_peth or is_overlap or is_occupancy or is_nearest
+        self._lbl_win.setVisible(is_peth)
+        self._spin_win.setVisible(is_peth)
+        self._lbl_bin.setVisible(show_bin)
+        self._spin_bin.setVisible(show_bin)
+        self._lbl_anchor.setVisible(is_peth or is_nearest)
+        self._combo_anchor.setVisible(is_peth or is_nearest)
         self._lbl_tgt_mode.setVisible(is_peth)
         self._combo_tgt_mode.setVisible(is_peth)
+        self._lbl_nn_anchor.setVisible(is_nearest)
+        self._combo_nn_anchor.setVisible(is_nearest)
+        self._lbl_nn_mode.setVisible(is_nearest)
+        self._combo_nn_mode.setVisible(is_nearest)
         self._lbl_gap.setVisible(is_raster)
         self._spin_gap.setVisible(is_raster)
         self._lbl_flank.setVisible(is_overlap)
@@ -316,10 +458,8 @@ class AnnotTab(_ExplorerTab):
             QtWidgets.QMessageBox.warning(self._root, "Annotation Explorer",
                                           "No data to save. Compile first.")
             return
-        fn, _ = QFileDialog.getSaveFileName(
-            self._root, "Save Annotation Cache", "annot_cache.annot",
-            "Annotation cache (*.annot);;All files (*)"
-        )
+        fn, _ = save_file_name(self._root, "Save Annotation Cache", "annot_cache.annot",
+                               "Annotation cache (*.annot);;All files (*)")
         if fn:
             try:
                 save_annex_cache(fn, self._cohort)
@@ -327,10 +467,8 @@ class AnnotTab(_ExplorerTab):
                 QtWidgets.QMessageBox.critical(self._root, "Save error", str(e))
 
     def _load_cache(self):
-        fn, _ = QFileDialog.getOpenFileName(
-            self._root, "Load Annotation Cache", "",
-            "Annotation cache (*.annot);;All files (*)"
-        )
+        fn, _ = open_file_name(self._root, "Load Annotation Cache", "",
+                               "Annotation cache (*.annot);;All files (*)")
         if not fn:
             return
         try:
@@ -403,10 +541,12 @@ class AnnotTab(_ExplorerTab):
         max_dist_s = float(self._spin_maxdist.value())
         ref_anchor = self._combo_anchor.currentData()
         tgt_mode   = self._combo_tgt_mode.currentData()
+        nn_anchor  = self._combo_nn_anchor.currentData()
+        nn_mode    = self._combo_nn_mode.currentData()
 
         fut = self.ctrl._exec.submit(
             self._analyze_worker, cohort, view, checked, ref, window, bin_s, gap,
-            flank_s, max_dist_s, ref_anchor, tgt_mode)
+            flank_s, max_dist_s, ref_anchor, tgt_mode, nn_anchor, nn_mode)
         def _done(_f=fut):
             try:
                 self._sig_ok.emit({"type": "render", "result": _f.result()})
@@ -417,7 +557,8 @@ class AnnotTab(_ExplorerTab):
     @staticmethod
     def _analyze_worker(cohort, view, checked, ref, window, bin_s, gap,
                         flank_s, max_dist_s,
-                        ref_anchor="mid", tgt_mode="span"):
+                        ref_anchor="mid", tgt_mode="span",
+                        nn_anchor="mid", nn_mode="absolute"):
         colors = {
             cls: ANNOT_PALETTE[cohort["annot_classes"].index(cls) % len(ANNOT_PALETTE)]
             if cls in cohort["annot_classes"] else "#aaaaaa"
@@ -432,7 +573,10 @@ class AnnotTab(_ExplorerTab):
             data = overlap_matrix(cohort, checked, bin_secs=bin_s, flank_secs=flank_s)
         elif view == "nearest":
             targets = [c for c in checked if c != ref]
-            data = nearest_neighbor_distances(cohort, ref, targets, max_secs=max_dist_s)
+            data = nearest_neighbor_distances(
+                cohort, ref, targets, max_secs=max_dist_s,
+                ref_anchor=ref_anchor, target_anchor=nn_anchor, direction=nn_mode
+            )
         elif view == "raster":
             data = event_raster_data(cohort, checked, gap_secs=gap)
         elif view == "occupancy":
@@ -445,7 +589,8 @@ class AnnotTab(_ExplorerTab):
             data = {}
         return {"view": view, "data": data, "colors": colors,
                 "checked": checked, "ref": ref, "window": window, "bin_s": bin_s,
-                "flank_s": flank_s, "max_dist_s": max_dist_s}
+                "flank_s": flank_s, "max_dist_s": max_dist_s,
+                "ref_anchor": ref_anchor, "nn_anchor": nn_anchor, "nn_mode": nn_mode}
 
     # ------------------------------------------------------------------
     # Done callbacks
@@ -496,6 +641,7 @@ class AnnotTab(_ExplorerTab):
             item.setForeground(QColor(ANNOT_PALETTE[i % len(ANNOT_PALETTE)]))
             self._list_cls.addItem(item)
         self._list_cls.blockSignals(False)
+        self._update_toggle_all_button()
 
         blocker = QSignalBlocker(self._combo_ref)
         self._combo_ref.clear()
@@ -529,12 +675,13 @@ class AnnotTab(_ExplorerTab):
         ref = result["ref"]
         flank_s = result.get("flank_s", 0.0)
         max_dist_s = result.get("max_dist_s", 3600.0)
+        bin_s = result.get("bin_s", 2.0)
         if vm == "peth":
             self._render_peth(d, c, ref)
         elif vm == "overlap":
             self._render_overlap(d, flank_s)
         elif vm == "nearest":
-            self._render_nearest(d, c, ref, max_dist_s)
+            self._render_nearest(d, c, ref, max_dist_s, bin_s)
         elif vm == "raster":
             self._render_raster(d, c)
         elif vm == "occupancy":
@@ -645,36 +792,96 @@ class AnnotTab(_ExplorerTab):
     # Render: nearest-neighbour CDFs
     # ------------------------------------------------------------------
 
-    def _render_nearest(self, data, colors, ref_class, max_dist_s=3600.0):
+    def _render_nearest(self, data, colors, ref_class, max_dist_s=3600.0, bin_s=2.0):
         canvas = self._ensure_canvas()
         self._set_canvas_height(min_height=420)
         fig = canvas.figure; fig.clear(); fig.patch.set_facecolor(BG)
-        non_empty = {cls: arr for cls, arr in data.items() if len(arr) > 0}
+        dists_by_class = data.get("distances", data)
+        ref_anchor = data.get("ref_anchor", "mid")
+        target_anchor = data.get("target_anchor", "mid")
+        direction = data.get("direction", "absolute")
+        bin_s = max(float(bin_s), 0.01)
+        non_empty = {cls: arr for cls, arr in dists_by_class.items() if len(arr) > 0}
         if not non_empty:
+            mode_lbl = {
+                "absolute": "absolute",
+                "leading": "leading",
+                "lagging": "lagging",
+                "signed": "signed",
+            }.get(direction, direction)
             self._render_empty(
-                f"No nearest-neighbour data for  '{ref_class}'.\nWithin max = {max_dist_s:.0f} s."
+                f"No nearest-neighbour data for  '{ref_class}'.\n"
+                f"Mode = {mode_lbl}, max = {max_dist_s:.0f} s."
             ); return
         ax = fig.add_subplot(111); self._style_ax(ax)
         ax.set_facecolor(BG)
         all_vals = np.concatenate(list(non_empty.values()))
-        x_max = max(float(np.percentile(all_vals, 98)), 1.0)
-        for cls, dists in non_empty.items():
-            col = colors.get(cls, "#aaaaaa"); n = len(dists)
-            x = np.concatenate([[0], dists, [x_max * 1.1]])
-            y = np.concatenate([[0], np.arange(1, n+1)/n, [1.0]])
-            ax.step(x, y, where="post", color=col, linewidth=1.5, label=cls)
-            ax.axvline(float(np.median(dists)), color=col, lw=0.6, ls=":", alpha=0.7)
-        ax.set_xlim(0, x_max); ax.set_ylim(0, 1.02)
-        ax.set_xlabel("Distance to nearest event (s)", color=FG, fontsize=9)
-        ax.set_ylabel("Cumulative fraction", color=FG, fontsize=9)
+        if direction == "signed":
+            x_lo = min(float(np.percentile(all_vals, 2)), 0.0)
+            x_hi = max(float(np.percentile(all_vals, 98)), 0.0)
+            x_pad = max((x_hi - x_lo) * 0.04, 1.0)
+            ax.set_xlim(x_lo - x_pad, x_hi + x_pad)
+            ax.axvline(0, color="#ffffff", linewidth=0.7, linestyle="--", alpha=0.5)
+            x_start = x_lo - x_pad
+            x_stop = x_hi + x_pad
+            edges = np.arange(x_start, x_stop + bin_s, bin_s)
+            if len(edges) < 2 or edges[-1] < x_stop:
+                edges = np.append(edges, x_stop)
+            centers = (edges[:-1] + edges[1:]) / 2.0
+            bin_w = edges[1] - edges[0] if len(edges) > 1 else 1.0
+            y_max = 0.0
+            for cls, dists in non_empty.items():
+                col = colors.get(cls, "#aaaaaa")
+                counts, _ = np.histogram(dists, bins=edges)
+                density = counts.astype(float) / max(len(dists) * bin_w, 1e-9)
+                y_max = max(y_max, float(density.max()) if len(density) else 0.0)
+                ax.step(centers, density, where="mid", color=col, linewidth=1.5, label=cls)
+                ax.fill_between(centers, 0, density, step="mid", color=col, alpha=0.15)
+                ax.axvline(float(np.mean(dists)), color=col, lw=0.8, ls=":", alpha=0.8)
+            ax.set_ylim(0, y_max * 1.08 if y_max > 0 else 1.0)
+        else:
+            for cls, dists in non_empty.items():
+                col = colors.get(cls, "#aaaaaa"); n = len(dists)
+                dists_s = np.sort(dists)
+                x_max = max(float(np.percentile(all_vals, 98)), 1.0)
+                x = np.concatenate([[0], dists_s, [x_max * 1.1]])
+                y = np.concatenate([[0], np.arange(1, n+1)/n, [1.0]])
+                ax.step(x, y, where="post", color=col, linewidth=1.5, label=cls)
+                ax.axvline(float(np.median(dists)), color=col, lw=0.6, ls=":", alpha=0.7)
+            x_max = max(float(np.percentile(all_vals, 98)), 1.0)
+            ax.set_xlim(0, x_max)
+            ax.set_ylim(0, 1.02)
+        ref_anchor_lbl = {"start": "start", "mid": "mid", "end": "end"}.get(ref_anchor, ref_anchor)
+        target_anchor_lbl = {"start": "start", "mid": "mid", "end": "end"}.get(target_anchor, target_anchor)
+        if direction == "leading":
+            xlabel = f"Time to nearest leading target ({ref_anchor_lbl}->{target_anchor_lbl}, s)"
+            mode_lbl = "leading"
+        elif direction == "lagging":
+            xlabel = f"Time to nearest lagging target ({ref_anchor_lbl}->{target_anchor_lbl}, s)"
+            mode_lbl = "lagging"
+        elif direction == "signed":
+            xlabel = f"Signed nearest target lag ({ref_anchor_lbl}->{target_anchor_lbl}, s)"
+            mode_lbl = "signed"
+        else:
+            xlabel = f"Distance to nearest target ({ref_anchor_lbl}<->{target_anchor_lbl}, s)"
+            mode_lbl = "absolute"
+        ax.set_xlabel(xlabel, color=FG, fontsize=9)
+        ylabel = "Density" if direction == "signed" else "Cumulative fraction"
+        ax.set_ylabel(ylabel, color=FG, fontsize=9)
+        title_kind = "Nearest-neighbour lag histogram" if direction == "signed" else "Nearest-neighbour CDF"
         ax.set_title(
-            f"Nearest-neighbour CDF  |  ref: {ref_class}  |  max: {max_dist_s:.0f} s",
-            color=FG, fontsize=10
+            f"{title_kind}  |  reference: {ref_class}  |  mode: {mode_lbl}"
+            f"  |  max: {max_dist_s:.0f} s"
+            f"{f'  |  bin: {bin_s:g} s' if direction == 'signed' else ''}\n"
+            f"ref anchor: {ref_anchor_lbl}  |  target anchor: {target_anchor_lbl}",
+            color=FG, fontsize=9, pad=6
         )
         ax.grid(True, color=GRID, lw=0.5)
         leg = ax.legend(fontsize=8, framealpha=0.3, facecolor="#1a1a1a", edgecolor=GRID)
         for t in leg.get_texts(): t.set_color(FG)
-        fig.subplots_adjust(left=0.10, right=0.97, top=0.90, bottom=0.12)
+        mean_items = [(cls, np.mean(dists)) for cls, dists in non_empty.items()]
+        self._add_mean_box(fig, mean_items, title="Mean")
+        fig.subplots_adjust(left=0.10, right=0.78, top=0.86, bottom=0.12)
         canvas.draw()
 
     # ------------------------------------------------------------------
@@ -841,7 +1048,9 @@ class AnnotTab(_ExplorerTab):
         for sp in ax.spines.values(): sp.set_edgecolor(GRID)
         ax.grid(True, axis="x", color=GRID, lw=0.5)
         ax.set_ylim(-0.7, n - 0.3)
-        fig.subplots_adjust(left=0.18, right=0.97, top=0.90, bottom=0.12)
+        mean_items = [(cls, np.mean(vals)) for cls, vals in data.items() if len(vals) > 0]
+        self._add_mean_box(fig, mean_items, title="Mean duration")
+        fig.subplots_adjust(left=0.18, right=0.78, top=0.90, bottom=0.12)
         canvas.draw()
 
     # ------------------------------------------------------------------
@@ -874,5 +1083,7 @@ class AnnotTab(_ExplorerTab):
         ax.grid(True, color=GRID, lw=0.5)
         leg = ax.legend(fontsize=8, framealpha=0.3, facecolor="#1a1a1a", edgecolor=GRID)
         for t in leg.get_texts(): t.set_color(FG)
-        fig.subplots_adjust(left=0.10, right=0.97, top=0.90, bottom=0.12)
+        mean_items = [(cls, np.mean(ieis)) for cls, ieis in non_empty.items()]
+        self._add_mean_box(fig, mean_items, title="Mean IEI")
+        fig.subplots_adjust(left=0.10, right=0.78, top=0.90, bottom=0.12)
         canvas.draw()

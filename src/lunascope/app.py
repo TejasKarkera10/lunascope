@@ -175,27 +175,36 @@ def main(argv=None) -> int:
     ui = _load_ui()
     controller = Controller(ui, proj)
     _install_signal_handlers(app, controller)
+
+    explicit_session = bool(args.slist_file and args.slist_file.lower().endswith(".lss"))
+    if not explicit_session:
+        controller.load_geometry_cache_silently()
+
     _boot_log("Showing main window...")
     ui.show()
 
     # optionally, attach a file list (or .edf or .annot):
     
     if args.slist_file:
+        input_path = str(Path(args.slist_file).expanduser())
 
         # Lunascope session?
-        if args.slist_file.lower().endswith(".lss"):
-            controller.load_session_state_file(args.slist_file)
+        if input_path.lower().endswith(".lss"):
+            controller.load_session_state_file(input_path)
         # EDF?
-        elif args.slist_file.lower().endswith(".edf"):
-            controller.open_edf( args.slist_file )
+        elif input_path.lower().endswith(".edf"):
+            controller.open_edf(input_path)
         # .annot file?
-        elif args.slist_file.lower().endswith(".annot"):
-            controller.open_annot( args.slist_file )
+        elif input_path.lower().endswith(".annot"):
+            controller.open_annot(input_path)
+        # folder? build a sample list
+        elif Path(input_path).is_dir():
+            controller._build_slist_from_folder(input_path)
         # otherwise, assume a sample list
         else:
-            folder_path = str(Path( args.slist_file ).parent) + os.sep
-            proj.var( 'path' , folder_path )
-            controller._read_slist_from_file( args.slist_file )        
+            folder_path = str(Path(input_path).parent) + os.sep
+            proj.var('path', folder_path)
+            controller._read_slist_from_file(input_path)
 
     # optionally, pre-load a parameter file?
     if args.param_file:

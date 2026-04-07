@@ -518,6 +518,20 @@ def peri_event_histogram(
 
 
 # ---------------------------------------------------------------------------
+# Event anchor helpers
+# ---------------------------------------------------------------------------
+
+def _event_anchor_times(ev, anchor: str = "mid") -> np.ndarray:
+    """Return event times for the requested anchor."""
+    anchor = str(anchor or "mid").lower()
+    if anchor == "start":
+        return ev["Start"].values.astype(float)
+    if anchor == "end":
+        return ev["Stop"].values.astype(float)
+    return ((ev["Start"].values + ev["Stop"].values) / 2.0).astype(float)
+
+
+# ---------------------------------------------------------------------------
 # Overlap / co-occurrence matrix
 # ---------------------------------------------------------------------------
 
@@ -654,9 +668,24 @@ def nearest_neighbor_distances(
     ref_class: str,
     target_classes: List[str],
     max_secs: Optional[float] = 3600.0,
+    ref_anchor: str = "mid",
+    target_anchor: str = "mid",
+    direction: str = "absolute",
 ) -> dict:
     """For each event of *ref_class*, find the time to the nearest event of
     each *target_classes* annotation **within the same subject**.
+
+    Parameters
+    ----------
+    ref_anchor : "start" | "mid" | "end"
+        Anchor used for the reference events.
+    target_anchor : "start" | "mid" | "end"
+        Anchor used for the target events.
+    direction : "absolute" | "leading" | "lagging"
+        "absolute" — minimum absolute distance, regardless of temporal order.
+        "leading"  — nearest target before the reference event.
+        "lagging"  — nearest target after the reference event.
+        "signed"   — nearest target by absolute distance, keeping sign.
 
     Returns
     -------
@@ -673,22 +702,40 @@ def nearest_neighbor_distances(
         ref_ev = ev[ev["Class"] == ref_class]
         if ref_ev.empty:
             continue
-        ref_times = (ref_ev["Start"].values + ref_ev["Stop"].values) / 2.0
+        ref_times = _event_anchor_times(ref_ev, ref_anchor)
 
         for cls in target_classes:
             tgt_ev = ev[ev["Class"] == cls]
             if tgt_ev.empty:
                 continue
-            tgt_times = (tgt_ev["Start"].values + tgt_ev["Stop"].values) / 2.0
+            tgt_times = _event_anchor_times(tgt_ev, target_anchor)
 
-            # For each ref event, minimum absolute distance to any target event
-            diffs = np.abs(ref_times[:, np.newaxis] - tgt_times[np.newaxis, :])
-            min_d = diffs.min(axis=1)
+            signed = tgt_times[np.newaxis, :] - ref_times[:, np.newaxis]
+            if direction == "leading":
+                signed = np.where(signed <= 0, -signed, np.inf)
+                min_d = signed.min(axis=1)
+            elif direction == "lagging":
+                signed = np.where(signed >= 0, signed, np.inf)
+                min_d = signed.min(axis=1)
+            elif direction == "signed":
+                nearest_idx = np.abs(signed).argmin(axis=1)
+                min_d = signed[np.arange(len(ref_times)), nearest_idx]
+            else:
+                min_d = np.abs(signed).min(axis=1)
+            min_d = min_d[np.isfinite(min_d)]
             if max_secs is not None:
-                min_d = min_d[min_d <= max_secs]
+                if direction == "signed":
+                    min_d = min_d[np.abs(min_d) <= max_secs]
+                else:
+                    min_d = min_d[min_d <= max_secs]
             distances[cls].extend(min_d.tolist())
 
-    return {cls: np.sort(np.array(v)) for cls, v in distances.items()}
+    return {
+        "distances": {cls: np.sort(np.array(v)) for cls, v in distances.items()},
+        "ref_anchor": ref_anchor,
+        "target_anchor": target_anchor,
+        "direction": direction,
+    }
 
 
 # ---------------------------------------------------------------------------

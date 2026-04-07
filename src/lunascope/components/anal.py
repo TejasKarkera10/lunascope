@@ -20,7 +20,7 @@
 #
 #  --------------------------------------------------------------------
 
-import sys, traceback, os
+import sys, traceback, os, threading
 import pandas as pd
 from typing import List, Tuple
 
@@ -40,6 +40,7 @@ from PySide6.QtGui import QTextCursor
 from PySide6.QtGui import QKeySequence, QGuiApplication, QShortcut
 
 from PySide6.QtGui import QAction
+from ..file_dialogs import open_file_name, save_file_name
 
 
 def _append_selected_extension(filename: str, selected_filter: str, allowed_exts: tuple[str, ...]) -> str:
@@ -107,6 +108,18 @@ class AnalMixin:
         
         # whether single-sample or whole-project mode
         self.project_mode = False
+        self._project_results_mode = False
+        self._proj_cancel_event = threading.Event()
+        self._proj_cancel_requested = False
+        self._proj_cancel_action = QAction("Stop project eval after current record", self.ui)
+        self._proj_cancel_action.setShortcut(QKeySequence("Ctrl+."))
+        self._proj_cancel_action.setShortcutContext(Qt.ApplicationShortcut)
+        self._proj_cancel_action.triggered.connect(self._request_project_eval_cancel)
+        self.ui.addAction(self._proj_cancel_action)
+        self.sig_proj_eval_stream.connect(self._proj_eval_append_stream, Qt.QueuedConnection)
+        self.sig_proj_eval_progress.connect(self._proj_eval_update_progress, Qt.QueuedConnection)
+        self.sig_proj_eval_finished.connect(self._proj_eval_done_ok, Qt.QueuedConnection)
+        self.sig_proj_eval_failed.connect(self._proj_eval_done_err, Qt.QueuedConnection)
 
 
 
@@ -115,6 +128,7 @@ class AnalMixin:
 
     def _exec_single_luna(self):
         self.project_mode = False
+        self._project_results_mode = False
         self._exec_luna()
         
     # ------------------------------------------------------------
@@ -133,6 +147,7 @@ class AnalMixin:
 
         # clear any old output
         if not self.project_mode:
+            self._project_results_mode = False
             clear_rows( self.ui.anal_tables )
             clear_rows( self.ui.anal_table )
         
@@ -323,11 +338,10 @@ class AnalMixin:
 
         for row in tbls.itertuples(index=False):
             key = f"{row.Command}_{row.Strata}"
-
-            # This table already has ID in it (per your comment),
-            # so we do NOT change the key, and we do NOT need to
-            # add ID again here.
-            df = self.p.table(row.Command, row.Strata)
+            df = self._normalize_project_result_table(
+                self.p.table(row.Command, row.Strata),
+                getattr(self.p, "id", None),
+            )
 
             if key in self._proj_results:
                 self._proj_results[key] = pd.concat(
@@ -343,6 +357,30 @@ class AnalMixin:
         except RuntimeError:
             pass
 
+    def _normalize_project_result_table(self, df, record_id):
+        if df is None:
+            return None
+
+        out = df.copy()
+        record_id = "" if record_id is None else str(record_id)
+
+        if "ID" not in out.columns:
+            out.insert(0, "ID", record_id)
+            return out
+
+        try:
+            id_col = out["ID"]
+            missing = id_col.isna()
+            if hasattr(id_col, "astype"):
+                missing = missing | id_col.astype(str).str.strip().eq("")
+            if missing.any():
+                out.loc[missing, "ID"] = record_id
+        except Exception:
+            pass
+
+        cols = ["ID"] + [c for c in out.columns if c != "ID"]
+        return out.loc[:, cols]
+
         
     # ------------------------------------------------------------
     # clear luna script box
@@ -355,12 +393,11 @@ class AnalMixin:
     # load a luna script
         
     def _load_luna(self):
-        txt_file, _ = QFileDialog.getOpenFileName(
+        txt_file, _ = open_file_name(
             self.ui,
             "Open Luna script",
             "",
-            "Luna Scripts (*.txt *.cmd *);;All Files (*)",
-            options=QFileDialog.Option.DontUseNativeDialog
+            "Luna Scripts (*.txt *.cmd *);;All Files (*)"
         )
         if txt_file:
             try:
@@ -381,12 +418,11 @@ class AnalMixin:
 
         new_file = self.ui.txt_inp.toPlainText()
 
-        filename, selected_filter = QFileDialog.getSaveFileName(
+        filename, selected_filter = save_file_name(
             self.ui,
             "Save Luna Script",
             "",
-            "Luna Scripts (*.txt *.cmd *);;All Files (*)",
-            options=QFileDialog.Option.DontUseNativeDialog
+            "Luna Scripts (*.txt *.cmd *);;All Files (*)"
         )
 
         if filename:
@@ -404,24 +440,19 @@ class AnalMixin:
         
         tbl = self.results[ "_".join( [ cmd , stratum ] ) ]
 
-        # sort by ID, then by E or N if present
-        # use pd.to_numeric coercion so string-typed columns from .db files sort correctly
-        sort_cols = ["ID"] if "ID" in tbl.columns else []
-        for col in ("E", "N"):
-            if col in tbl.columns:
-                sort_cols.append(col)
-                break
-        if sort_cols:
+        # Keep Luna's original row order unless an ID column is present.
+        # If ID exists, sort stably by ID only.
+        if "ID" in tbl.columns:
             try:
                 tbl = tbl.sort_values(
-                    sort_cols,
-                    key=lambda s: pd.to_numeric(s, errors="coerce") if s.name in ("E", "N") else s,
+                    ["ID"],
                     na_position="last",
+                    kind="stable",
                 )
             except Exception:
                 pass
 
-        if not self.project_mode:
+        if not self.project_mode and not self._project_results_mode:
             tbl = tbl.drop(columns=["ID"])
 
         # transpose?
@@ -439,18 +470,25 @@ class AnalMixin:
         self.anal_table_proxy.setSourceModel( self.anal_model )
 
         view = self.ui.anal_table
+        view.setSortingEnabled(False)
         view.setModel(self.anal_table_proxy)
 
         # pass existing proxy so attach_comma_filter wires the filter without wrapping again
         self.ui.flt_table.clear()
         self.events_table_proxy = attach_comma_filter( self.ui.anal_table , self.ui.flt_table , proxy=self.anal_table_proxy )
 
-        view.setSortingEnabled(True)
         h = view.horizontalHeader()
         h.setSectionResizeMode(QHeaderView.Interactive)  # user-resizable
         h.setStretchLastSection(False)                   # no auto-stretch fighting you
         h.setResizeContentsPrecision(50)                 # sample first 50 rows only
         view.resizeColumnsToContents()
+        if "ID" in tbl.columns:
+            try:
+                id_col = list(tbl.columns).index("ID")
+                view.setSortingEnabled(True)
+                view.sortByColumn(id_col, Qt.AscendingOrder)
+            except Exception:
+                view.setSortingEnabled(False)
 
         
     def _on_anal_filter_text(self, text: str):
@@ -599,80 +637,193 @@ class AnalMixin:
     # project-level eval
 
     def _proj_eval(self):
+        if self._busy:
+            if self.project_mode:
+                self._request_project_eval_cancel()
+            return
 
-        
         view = self.ui.tbl_slist
         model = view.model()
         if not model:
             return
         n = model.rowCount()
+        if n == 0:
+            return
 
-        print('evaluating luna-script for', n, 'observations')
+        cmd = self.ui.txt_inp.toPlainText()
+        param = self._parse_tab_pairs(self.ui.txt_param)
+        records = []
+        for row in range(n):
+            idx = model.index(row, 0)
+            label = str(model.data(idx) or "")
+            if label:
+                records.append((label, label))
+        if not records:
+            return
 
         self.project_mode = True
+        self._project_results_mode = False
+        self._proj_cancel_event.clear()
+        self._proj_cancel_requested = False
 
         clear_rows(self.ui.anal_tables)
         clear_rows(self.ui.anal_table)
         self.ui.txt_out.clear()
-        
-        # project accumulators
-        self._proj_view = view
-        self._proj_model = model
-        self._proj_n = n
-        self._proj_i = 0
+        self._busy = True
+        self._buttons(False)
+        self._set_project_eval_action_state(running=True, cancel_requested=False)
+        self.sb_progress.setVisible(True)
+        self.sb_progress.setRange(0, len(records))
+        self.sb_progress.setValue(0)
+        self.sb_progress.setFormat(f"0 / {len(records)}")
+        self.lock_ui("Processing...\n\nPress Ctrl+. to stop after this record")
 
-        self._proj_tbls = []        # list of strata DFs, one per record
-        self._proj_results = {}     # key -> aggregated DF (all records)
-        self._proj_current_label = None  # optional: instance label per record
+        fut = self._exec.submit(self._project_eval_worker, records, cmd, param)
 
-        self._proj_eval_next()
+        def _done(_f=fut):
+            try:
+                self.sig_proj_eval_finished.emit(_f.result())
+            except Exception as e:
+                self._last_exc = e
+                self._last_tb = f"{type(e).__name__}: {e}"
+                self.sig_proj_eval_failed.emit(self._last_tb)
 
-    
-    def _proj_eval_next(self):
+        fut.add_done_callback(_done)
 
-        if self._proj_i >= self._proj_n:
-            # all done
-            self._finish_project_eval()
+    def _project_eval_worker(self, records, cmd, param):
+        proj_tbls = []
+        proj_results = {}
+        cancelled = False
+
+        for i, (id_str, label) in enumerate(records, start=1):
+            if self._proj_cancel_event.is_set():
+                cancelled = True
+                self.sig_proj_eval_stream.emit("\nInterrupted.\n")
+                break
+
+            header = (
+                "\n\n------------------------------------------------------------------\n"
+                f"Processing: {label} (#{i})\n"
+            )
+            for chunk in header.splitlines(True):
+                self.sig_proj_eval_stream.emit(chunk)
+
+            stderr_txt = ""
+            try:
+                self.proj.clear_vars()
+                self.proj.reinit()
+                for a, b in param:
+                    self.proj.var(a, b)
+
+                p = self.proj.inst(id_str)
+                stderr_txt = p.eval_lunascope(cmd) or ""
+                if stderr_txt:
+                    for chunk in stderr_txt.splitlines(True):
+                        self.sig_proj_eval_stream.emit(chunk)
+
+                tbls = p.strata()
+                if tbls is not None:
+                    proj_tbls.append(tbls[["Command", "Strata"]].copy())
+                    for row in tbls.itertuples(index=False):
+                        key = f"{row.Command}_{row.Strata}"
+                        df = self._normalize_project_result_table(
+                            p.table(row.Command, row.Strata),
+                            id_str,
+                        )
+                        if key in proj_results:
+                            proj_results[key] = pd.concat([proj_results[key], df], ignore_index=True)
+                        else:
+                            proj_results[key] = df
+
+                try:
+                    p.silent_proc("REPORT show-all")
+                except RuntimeError:
+                    pass
+            except Exception as e:
+                if stderr_txt:
+                    self.sig_proj_eval_stream.emit("\n")
+                raise RuntimeError(f"{label}: {type(e).__name__}: {e}") from e
+
+            self.sig_proj_eval_progress.emit(i, len(records))
+
+        all_tbls = None
+        if proj_tbls:
+            all_tbls = pd.concat(proj_tbls, ignore_index=True)
+            all_tbls = all_tbls.drop_duplicates(subset=["Command", "Strata"])
+
+        return {"tbls": all_tbls, "results": proj_results, "cancelled": cancelled}
+
+    def _request_project_eval_cancel(self):
+        if self._proj_cancel_requested:
             return
+        self._proj_cancel_requested = True
+        self._proj_cancel_event.set()
+        self._set_project_eval_action_state(running=True, cancel_requested=True)
 
-        row = self._proj_i        
-        self._proj_view.selectRow(row)
-        idx = self._proj_model.index(row, 0)
+    def _set_project_eval_action_state(self, running=False, cancel_requested=False):
+        act = getattr(self, "_act_proj_eval", None)
+        if act is None:
+            return
+        if not running:
+            act.setText("Evaluate (project)")
+            return
+        if cancel_requested:
+            act.setText("Stopping project eval...")
+        else:
+            act.setText("Stop after current record")
 
-        self._proj_current_label = self._proj_model.data(idx)
-
-        print('evaluating', row + 1, 'of', self._proj_n)
+    @Slot(str)
+    def _proj_eval_append_stream(self, text):
         out = self.ui.txt_out
         out.moveCursor(QTextCursor.End)
-        s = '\n\n------------------------------------------------------------------\nProcessing: '
-        s += self._proj_current_label
-        s += ' (#' + str(row+1) + ')'
-        out.insertPlainText(s)
+        out.insertPlainText(text)
+        out.moveCursor(QTextCursor.End)
 
-        self._attach_inst(idx, None)
-        self._exec_luna()
+    @Slot(int, int)
+    def _proj_eval_update_progress(self, done, total):
+        self.sb_progress.setRange(0, total)
+        self.sb_progress.setValue(done)
+        suffix = " (stopping)" if self._proj_cancel_requested else ""
+        self.sb_progress.setFormat(f"{done} / {total}{suffix}")
 
+    @Slot(object)
+    def _proj_eval_done_ok(self, payload):
+        try:
+            tbls = payload.get("tbls")
+            self.results = payload.get("results", {})
+            self._project_results_mode = True
+            if tbls is not None:
+                self._render_project_results(tbls)
+            self._detach_inst_preserve_analysis()
+        finally:
+            self.unlock_ui()
+            self._busy = False
+            self._proj_cancel_event.clear()
+            self._proj_cancel_requested = False
+            self._set_project_eval_action_state(running=False)
+            self._buttons(True)
+            self.sb_progress.setRange(0, 100)
+            self.sb_progress.setValue(0)
+            self.sb_progress.setVisible(False)
+            self.project_mode = False
 
-
-        
-    def _finish_project_eval(self):
-
-        # Nothing collected? bail
-        if not hasattr(self, "_proj_tbls") or not self._proj_tbls:
-            return
-
-        # Aggregate strata across all records, then drop duplicates
-        all_tbls = pd.concat(self._proj_tbls, ignore_index=True)
-        all_tbls = all_tbls.drop_duplicates(subset=["Command", "Strata"])
-
-        # Final aggregated results dict
-        if hasattr(self, "_proj_results"):
-            self.results = self._proj_results
-        else:
-            self.results = {}
-
-        # Now render once, using the same COMMAND/STRATA tree keys
-        self._render_project_results(all_tbls)
+    @Slot(str)
+    def _proj_eval_done_err(self, msg):
+        try:
+            self._project_results_mode = bool(getattr(self, "results", {}))
+            QMessageBox.critical(self.ui, "Project evaluation error", msg)
+            self._detach_inst_preserve_analysis()
+        finally:
+            self.unlock_ui()
+            self._busy = False
+            self._proj_cancel_event.clear()
+            self._proj_cancel_requested = False
+            self._set_project_eval_action_state(running=False)
+            self._buttons(True)
+            self.sb_progress.setRange(0, 100)
+            self.sb_progress.setValue(0)
+            self.sb_progress.setVisible(False)
+            self.project_mode = False
 
         
 

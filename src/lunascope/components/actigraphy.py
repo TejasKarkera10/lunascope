@@ -28,6 +28,7 @@ import lunapi as lp
 import numpy as np
 
 from ..helpers import screen_clamp, is_dark_palette
+from ..file_dialogs import save_file_name
 
 from PySide6 import QtCore, QtWidgets, QtGui
 from PySide6.QtCore import QMetaObject, Qt, Slot
@@ -475,7 +476,7 @@ class ActigraphyMixin:
 
     def _actigraphy_save_figure(self):
         self._ensure_actigraphy_canvas()
-        fn, _ = QtWidgets.QFileDialog.getSaveFileName(
+        fn, _ = save_file_name(
             self.actigraphycanvas,
             "Save Figure",
             "actigraphy",

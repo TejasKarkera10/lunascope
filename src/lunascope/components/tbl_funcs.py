@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QIcon, QStandardItem
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QFileDialog
+from ..file_dialogs import save_file_name
 
 from typing import Iterable, Optional, Callable, List
 from PySide6.QtCore import Qt, QSignalBlocker
@@ -574,12 +575,11 @@ def save_table_as_tsv(view,_self):
     if model is None:
         return
 
-    path, _ = QFileDialog.getSaveFileName(
+    path, _ = save_file_name(
         view,
         "Save as TSV",
         "",
         "TSV files (*.tsv);;All Files (*)",
-        options=QFileDialog.Option.DontUseNativeDialog,
     )
     if not path:
         return

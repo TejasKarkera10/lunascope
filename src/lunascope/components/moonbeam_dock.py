@@ -33,6 +33,7 @@ import time
 
 import lunapi as lp
 import pandas as pd
+from ..file_dialogs import existing_directory
 from lunapi.moonbeam import _load_token as _mb_load_tok, _save_token as _mb_save_tok
 
 from ..helpers import screen_clamp, is_dark_palette
@@ -941,11 +942,9 @@ class MoonbeamMixin:
     # -----------------------------------------------------------------------
 
     def _mb_browse_cache(self):
-        from PySide6.QtWidgets import QFileDialog
-        folder = QFileDialog.getExistingDirectory(
+        folder = existing_directory(
             self.ui, "Choose cache directory",
             self._mb_cdir,
-            QFileDialog.Option.DontUseNativeDialog,
         )
         if folder:
             self._mb_apply_cache_dir(folder)

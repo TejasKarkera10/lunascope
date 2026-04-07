@@ -63,6 +63,7 @@ from .annot_explorer_funcs import (
     peri_event_histogram,
     save_annex_cache,
 )
+from ..file_dialogs import open_file_name, save_file_name
 
 
 # ---------------------------------------------------------------------------
@@ -398,10 +399,8 @@ class AnnotExplorerMixin:
             )
             return
 
-        fn, _ = QFileDialog.getSaveFileName(
-            self.ui, "Save Annotation Cache", "annot_explorer.annot",
-            "Luna annotation (*.annot);;All files (*)"
-        )
+        fn, _ = save_file_name(self.ui, "Save Annotation Cache", "annot_explorer.annot",
+                               "Luna annotation (*.annot);;All files (*)")
         if not fn:
             return
         try:
@@ -410,10 +409,8 @@ class AnnotExplorerMixin:
             QMessageBox.critical(self.ui, "Save error", str(e))
 
     def _annex_load_cache(self):
-        fn, _ = QFileDialog.getOpenFileName(
-            self.ui, "Load Annotation Cache", "",
-            "Luna annotation (*.annot);;All files (*)"
-        )
+        fn, _ = open_file_name(self.ui, "Load Annotation Cache", "",
+                               "Luna annotation (*.annot);;All files (*)")
         if not fn:
             return
         try:
@@ -1190,9 +1187,7 @@ class AnnotExplorerMixin:
     def _annex_save_figure(self):
         if self._annex_canvas is None:
             return
-        fn, _ = QFileDialog.getSaveFileName(
-            self.ui, "Save Figure", "annot_explorer",
-            "PNG (*.png);;SVG (*.svg);;PDF (*.pdf)"
-        )
+        fn, _ = save_file_name(self.ui, "Save Figure", "annot_explorer",
+                               "PNG (*.png);;SVG (*.svg);;PDF (*.pdf)")
         if fn:
             self._annex_canvas.figure.savefig(fn, bbox_inches="tight", facecolor=_BG)

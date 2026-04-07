@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from .explorer_base import BG, FG, GRID, _ExplorerTab
+from ..file_dialogs import open_file_name
 
 
 # ---------------------------------------------------------------------------
@@ -286,10 +287,8 @@ class PlotterTab(_ExplorerTab):
     # ------------------------------------------------------------------
 
     def _load_aux_file(self):
-        fn, _ = QFileDialog.getOpenFileName(
-            self._root, "Load Covariate File", "",
-            "Tabular files (*.tsv *.csv *.txt);;All files (*)"
-        )
+        fn, _ = open_file_name(self._root, "Load Covariate File", "",
+                               "Tabular files (*.tsv *.csv *.txt);;All files (*)")
         if not fn:
             return
         try:

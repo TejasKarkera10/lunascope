@@ -21,7 +21,7 @@ from ..helpers import screen_clamp
 class ExplorerMixin:
     """Mixin that creates and owns the tabbed Explorer dock."""
 
-    _EXPLORER_FLOAT_SIZE = (1500, 940)
+    _EXPLORER_FLOAT_SIZE = (1320, 840)
 
     # ------------------------------------------------------------------
     # Initialisation (called from Controller.__init__)
@@ -96,7 +96,10 @@ class ExplorerMixin:
             ctr = pg.center()
             rect = dock.frameGeometry()
             rect.moveCenter(ctr)
-            dock.move(rect.topLeft())
+            top_left = rect.topLeft()
+            if top_left.y() < pg.top():
+                top_left.setY(pg.top())
+            dock.move(top_left)
         except Exception:
             pass
 
