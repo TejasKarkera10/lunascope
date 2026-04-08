@@ -25,7 +25,7 @@ import io
 import numpy as np
 from lunascope.helpers import winsorize_array
 
-from PySide6.QtWidgets import QVBoxLayout, QMessageBox
+from PySide6.QtWidgets import QVBoxLayout, QMessageBox, QSizePolicy
 from PySide6 import QtCore, QtWidgets, QtGui
 from ..file_dialogs import save_file_name
 
@@ -46,6 +46,8 @@ class SpecMixin:
 
         from .mplcanvas import MplCanvas
         self.spectrogramcanvas = MplCanvas(self.ui.host_spectrogram)
+        self.spectrogramcanvas.setMinimumSize(0, 0)
+        self.spectrogramcanvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         layout.addWidget(self.spectrogramcanvas)
         self.spectrogramcanvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.spectrogramcanvas.customContextMenuRequested.connect(self._spec_context_menu)

@@ -461,9 +461,38 @@ class MetricsMixin:
     def _update_instances(self, anns):
 
         # request w/ hms and duration also (True)
-        
         rows = self.ssa.get_all_annots_with_inst_ids(anns, True)
         df = pd.DataFrame(rows, columns=["class", "inst", "hms", "start", "dur"])
+
+        # Fetch per-event metadata (col 6) via the ANNOTS command.
+        # fetch_fulls_annots strips key names from the meta string so we use
+        # p.table('ANNOTS','ANNOT_INST_T1_T2') instead — its VAL column carries
+        # the full "key=val;key2=val2" string as it appears in the .annot file.
+        # Build (class, start) → VAL lookup from the ANNOTS command output.
+        # Note: get_all_annots_with_inst_ids returns [class, channel, hms, start, dur]
+        # — the second field is the channel, not the instance ID — so we match on
+        # (class, start) only to avoid mismatches between '.' (ANNOTS INST) and
+        # the channel string returned by get_all_annots_with_inst_ids.
+        meta_lookup = {}
+        try:
+            self.p.silent_proc("ANNOTS")
+            ann_tbl = self.p.table("ANNOTS", "ANNOT_INST_T1_T2")
+            if ann_tbl is not None and not ann_tbl.empty:
+                for row in ann_tbl.itertuples(index=False):
+                    raw = row.VAL if hasattr(row, "VAL") else None
+                    if raw is None or str(raw) in (".", "", "nan", "None"):
+                        val = ""
+                    else:
+                        val = str(raw).replace(";", "; ")
+                    key = (str(row.ANNOT), round(float(row.START), 3))
+                    meta_lookup[key] = val
+        except Exception:
+            pass
+
+        def _get_meta(r):
+            return meta_lookup.get((str(r["class"]), round(float(r["start"]), 3)), "")
+
+        df["meta"] = df.apply(_get_meta, axis=1)
         self.events_model = self.df_to_model(df)
 
         view = self.ui.tbl_desc_events

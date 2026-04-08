@@ -178,13 +178,20 @@ def plot_spec( xi,yi,zi, ch, minf, maxf, ax , gui, clear = True):
         
     if len(xi) == 0: return ax
 
+    fig = ax.figure
+    fig.set_constrained_layout(False)
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1, wspace=0, hspace=0)
+    ax.set_position([0, 0, 1, 1])
+
     ax.set_xlabel('Epoch')
     ax.set_ylabel('Frequency (Hz)')
-    ax.set( ylim=(minf,maxf) )
+    ax.set_axis_on()
+    ax.set_ylim(float(yi[0]), float(yi[-1]))
     p1 = ax.pcolormesh(xi, yi, zi, cmap = 'turbo' )
     if len(xi) > 1:
         ax.set_xlim(0, float(np.nanmax(xi)))
-    ax.margins(x=0, y=0.2)
+    ax.set_aspect("auto")
+    ax.margins(x=0, y=0)
     return ax  
 
 

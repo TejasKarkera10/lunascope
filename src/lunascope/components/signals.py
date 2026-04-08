@@ -126,6 +126,24 @@ class SignalsMixin:
         self.pg1_header_height = 0.05
         self.pg1_footer_height = 0.025
         self.pg1_annot_height  = 0
+        self._pg1_channel_cache = []
+        self._pg1_probe_line = None
+        self._pg1_probe_start_sample_line = None
+        self._pg1_probe_sample_line = None
+        self._pg1_probe_span_line = None
+        self._pg1_probe_label = None
+        self._pg1_probe_legend = None
+        self._pg1_probe_band_lines = []
+        self._pg1_probe_grid_lines = None
+        self._pg1_probe_zero_lines = None
+        self._pg1_probe_peak_max = None
+        self._pg1_probe_peak_min = None
+        self._pg1_probe_keys = set()
+        self._pg1_probe_grid_steps = [None, 1, 5, 10, 30, 60, 300, 600, 1800, 3600]
+        self._pg1_probe_grid_idx = 0
+        self._pg1_probe_pinned = False
+        self._pg1_probe = MainTraceProbe(self.ui.pg1, self)
+        self._pg1_nav_proxy = MainTraceNavProxy(self.ui.pg1, self)
 
     def _init_line_weight_control(self):
         if getattr(self, "_line_weight_widget", None) is not None:
@@ -567,6 +585,8 @@ class SignalsMixin:
     
         
     def _render_signals(self):
+        if getattr(self, "_pg1_probe", None) is not None:
+            self._pg1_probe.clear_pinned()
 
         if not hasattr(self, "p"):
             QMessageBox.critical( self.ui , "Error", "No instance attached" )
@@ -684,6 +704,8 @@ class SignalsMixin:
 
         
     def on_window_range(self, lo: float, hi: float):
+        if getattr(self, "_pg1_probe", None) is not None:
+            self._pg1_probe.clear_pinned()
 
         # time in seconds now
         if lo < 0: lo = 0
@@ -835,12 +857,9 @@ class SignalsMixin:
         # y=0 lines
         #
 
-        y0col = 'gray'
-        if self.palset == 'white' or self.palset == 'muted':
-            y0col = 'black'
-
         for i in range(nchan):
-            pen = pg.mkPen( y0col, width=2, cosmetic=True )
+            base_col = self.colors[i] if i < len(self.colors) else 'gray'
+            pen = pg.mkPen(base_col, width=2, cosmetic=True)
             pen.setDashPattern([8, 4])
             c = pg.PlotCurveItem(pen=pen, connect='finite')
             pi.addItem(c)
@@ -936,6 +955,10 @@ class SignalsMixin:
                 )
                 pi.addItem(_line)
                 self._day_lines_pg1.append(_line)
+
+        self._pg1_channel_cache = []
+        self._init_pg1_probe_items()
+        self._update_pg1_probe_styles()
         
 
     # --------------------------------------------------------------------------------
@@ -1088,6 +1111,8 @@ class SignalsMixin:
 
     
     def _update_pg1(self):
+        if getattr(self, "_pg1_probe", None) is not None:
+            self._pg1_probe.clear_pinned()
 
         if self.rendered is not True:
             self._update_pg1_simple()
@@ -1131,19 +1156,32 @@ class SignalsMixin:
         # channels
         nchan = len( chs )
         idx = 0
+        self._pg1_channel_cache = []
         sigmod_idx = 0 # n(ch) x 18
         tv = [ '' ] * ( len(chs) + len(anns) )
         yv = [ 0.5 ] * ( len(chs) + len(anns) )
         xv = [  x1 + ( x2 - x1 ) * 0.02 ] * ( len(chs) + len(anns) )
         for ch in chs:
+            x = None
+            y = None
 
             # y0 lines
+            curve_slot = nchan - idx - 1
+            curve_color = self.colors[curve_slot] if curve_slot < len(self.colors) else 'gray'
+            self._set_y0_curve_pen(idx, curve_color)
             if self.cfg_show_zero_line:
                 y0 = self.ss.get_scaled_y( ch , 0 )
-                if y0 >= 0:
+                ylim = self.ss.get_window_phys_range( ch )
+                band0 = self.ss.get_scaled_y(ch, ylim[0])
+                band1 = self.ss.get_scaled_y(ch, ylim[1])
+                band_lo = min(band0, band1)
+                band_hi = max(band0, band1)
+                if band_lo <= y0 <= band_hi:
                     self.y0_curves[idx].setData([ x1, x2 ], [ y0 , y0 ])
                 else:
                     self.y0_curves[idx].setData([], [])
+            else:
+                self.y0_curves[idx].setData([], [])
                                     
             # y-lines
             if ch in self.cmap_ylines_idx:
@@ -1172,8 +1210,19 @@ class SignalsMixin:
                 # draw
                 self.curves[nchan-idx-1].setData(x, y)
 
-            # labels w/ y-axis scale
             ylim = self.ss.get_window_phys_range( ch )
+            band0 = self.ss.get_scaled_y(ch, ylim[0])
+            band1 = self.ss.get_scaled_y(ch, ylim[1])
+            self._cache_pg1_channel_band(
+                ch=ch,
+                band_lo=min(band0, band1),
+                band_hi=max(band0, band1),
+                phys_lo=float(ylim[0]),
+                phys_hi=float(ylim[1]),
+                x=x,
+                y_scaled=y,
+                zero_scaled=self.ss.get_scaled_y(ch, 0),
+            )
             if self.show_labels:
                 tv[idx] = ' ' + ch + ' ' + str(round(ylim[0],3)) + ' : ' + str(round(ylim[1],3)) + ' (' + self.units[ ch ] +')'
             yv[idx] = self.ss.get_ylabel( idx )
@@ -1241,6 +1290,8 @@ class SignalsMixin:
         ty.append( 0.03 )
         self.tb.setData(tx, ty , tv )
 
+        self._hide_pg1_probe()
+
         # repaint
         vb.update()  
 
@@ -1300,6 +1351,8 @@ class SignalsMixin:
     # --------------------------------------------------------------------------------
 
     def _update_pg1_simple(self):
+        if getattr(self, "_pg1_probe", None) is not None:
+            self._pg1_probe.clear_pinned()
 
         # get epoch 'e' for channel 'ch =' w/ time
         # p.slice( p.e2i( 1 ) ,  chs = ['C3'] , time = True ) 
@@ -1357,14 +1410,19 @@ class SignalsMixin:
             
         # channels
         idx = 0        
+        self._pg1_channel_cache = []
         tv = [ '' ] * ( len(chs) + len(anns) )
         yv = [ 0.5 ] * ( len(chs) + len(anns) )
         xv = [ x1 + ( x2 - x1 ) * 0.02 ] * ( len(chs) + len(anns) )
         for ch in chs:
             # signals
             d = self.p.slice( self.p.s2i( [ ( x1 , x2 ) ] ) , chs = ch , time = True )[1]
+            curve_color = self.colors[idx] if idx < len(self.colors) else 'gray'
+            self._set_y0_curve_pen(idx, curve_color)
             # no data, e.g. in gap?
             if len(d) == 0:
+                if idx < len(self.y0_curves):
+                    self.y0_curves[idx].setData([], [])
                 idx = idx + 1
                 continue
             x = d[:,0]  # time-track
@@ -1385,6 +1443,28 @@ class SignalsMixin:
             y = ybase + y * h 
             # plot
             self.curves[idx].setData(x, y)
+            if self.cfg_show_zero_line:
+                if mx > mn:
+                    y0 = ybase + ((0.0 - mn) / (mx - mn)) * h
+                    if ybase <= y0 <= (ybase + h):
+                        self.y0_curves[idx].setData([x1, x2], [y0, y0])
+                    else:
+                        self.y0_curves[idx].setData([], [])
+                else:
+                    self.y0_curves[idx].setData([], [])
+            else:
+                self.y0_curves[idx].setData([], [])
+            self._cache_pg1_channel_band(
+                ch=ch,
+                band_lo=ybase,
+                band_hi=ybase + h,
+                phys_lo=float(mn),
+                phys_hi=float(mx),
+                x=x,
+                y_scaled=y,
+                y_phys=d[:,1],
+                zero_scaled=(ybase + ((0.0 - mn) / (mx - mn)) * h) if mx > mn else (ybase + 0.5 * h),
+            )
             # labels
             ylim = [ mn , mx ] 
             if self.show_labels:
@@ -1392,6 +1472,9 @@ class SignalsMixin:
             yv[idx] = ybase + 0.5 * h
             # next
             idx = idx + 1
+
+        for i in range(idx, len(self.y0_curves)):
+            self.y0_curves[i].setData([], [])
 
         # annots (from ssa)
         aidx = 0
@@ -1459,8 +1542,1009 @@ class SignalsMixin:
         ty.append( 0.03 )
         self.tb.setData(tx, ty , tv )
 
+        self._hide_pg1_probe()
+
         # repaint
         vb.update()  
+
+    def _init_pg1_probe_items(self):
+        pi = self.ui.pg1.getPlotItem()
+        self._pg1_probe_line = pg.InfiniteLine(
+            pos=0.0,
+            angle=90,
+            pen=pg.mkPen((255, 235, 120, 190), width=1, cosmetic=True),
+        )
+        self._pg1_probe_line.setZValue(40)
+        self._pg1_probe_line.hide()
+        pi.addItem(self._pg1_probe_line)
+
+        self._pg1_probe_start_sample_line = pg.PlotCurveItem(
+            pen=pg.mkPen((120, 210, 255, 230), width=2, cosmetic=True)
+        )
+        self._pg1_probe_start_sample_line.setZValue(41)
+        self._pg1_probe_start_sample_line.hide()
+        pi.addItem(self._pg1_probe_start_sample_line)
+
+        self._pg1_probe_sample_line = pg.PlotCurveItem(
+            pen=pg.mkPen((255, 235, 120, 230), width=2, cosmetic=True)
+        )
+        self._pg1_probe_sample_line.setZValue(41)
+        self._pg1_probe_sample_line.hide()
+        pi.addItem(self._pg1_probe_sample_line)
+
+        self._pg1_probe_span_line = pg.PlotCurveItem(
+            pen=pg.mkPen((180, 220, 255, 210), width=2, style=QtCore.Qt.DotLine, cosmetic=True)
+        )
+        self._pg1_probe_span_line.setZValue(41)
+        self._pg1_probe_span_line.hide()
+        pi.addItem(self._pg1_probe_span_line)
+
+        self._pg1_probe_label = pg.TextItem(
+            text="",
+            color=(255, 255, 255),
+            border=pg.mkPen((255, 255, 255, 80)),
+            fill=pg.mkBrush(0, 0, 0, 170),
+            anchor=(0, 1),
+        )
+        self._pg1_probe_label.setZValue(42)
+        self._pg1_probe_label.hide()
+        pi.addItem(self._pg1_probe_label)
+
+        self._pg1_probe_legend = pg.TextItem(
+            text="",
+            color=(220, 220, 220),
+            border=pg.mkPen((255, 255, 255, 50)),
+            fill=pg.mkBrush(0, 0, 0, 130),
+            anchor=(0.5, 1),
+        )
+        self._pg1_probe_legend.setZValue(42)
+        self._pg1_probe_legend.hide()
+        pi.addItem(self._pg1_probe_legend)
+
+        self._pg1_probe_grid_lines = pg.PlotCurveItem(
+            pen=pg.mkPen((255, 255, 255, 110), width=1, style=QtCore.Qt.DotLine, cosmetic=True),
+            connect='pairs',
+        )
+        self._pg1_probe_grid_lines.setZValue(38)
+        self._pg1_probe_grid_lines.hide()
+        pi.addItem(self._pg1_probe_grid_lines)
+
+        self._pg1_probe_zero_lines = pg.PlotCurveItem(
+            pen=pg.mkPen((140, 255, 180, 170), width=1, style=QtCore.Qt.DotLine, cosmetic=True),
+            connect='pairs',
+        )
+        self._pg1_probe_zero_lines.setZValue(40)
+        self._pg1_probe_zero_lines.hide()
+        pi.addItem(self._pg1_probe_zero_lines)
+
+        self._pg1_probe_zero_baseline = pg.PlotCurveItem(
+            pen=pg.mkPen((140, 255, 180, 210), width=1, cosmetic=True)
+        )
+        self._pg1_probe_zero_baseline.setZValue(40)
+        self._pg1_probe_zero_baseline.hide()
+        pi.addItem(self._pg1_probe_zero_baseline)
+
+        self._pg1_probe_peak_max = pg.ScatterPlotItem(
+            size=8,
+            pen=pg.mkPen((255, 210, 120, 220)),
+            brush=pg.mkBrush(255, 210, 120, 180),
+            symbol='t',
+        )
+        self._pg1_probe_peak_max.setZValue(41)
+        self._pg1_probe_peak_max.hide()
+        pi.addItem(self._pg1_probe_peak_max)
+
+        self._pg1_probe_peak_min = pg.ScatterPlotItem(
+            size=8,
+            pen=pg.mkPen((120, 210, 255, 220)),
+            brush=pg.mkBrush(120, 210, 255, 180),
+            symbol='t1',
+        )
+        self._pg1_probe_peak_min.setZValue(41)
+        self._pg1_probe_peak_min.hide()
+        pi.addItem(self._pg1_probe_peak_min)
+
+        self._pg1_probe_band_lines = []
+        for _ in range(64):
+            line = pg.PlotCurveItem(
+                pen=pg.mkPen((255, 255, 255, 90), width=1, style=QtCore.Qt.DotLine, cosmetic=True)
+            )
+            line.setZValue(39)
+            line.hide()
+            pi.addItem(line)
+            self._pg1_probe_band_lines.append(line)
+
+    def _pg1_probe_dark_bg(self):
+        palset = getattr(self, "palset", "spectrum")
+        if palset in ("white", "muted"):
+            return False
+        if palset == "user":
+            try:
+                col = pg.mkColor(getattr(self, "c1", "#101010"))
+                lum = 0.2126 * col.red() + 0.7152 * col.green() + 0.0722 * col.blue()
+                return lum < 160
+            except Exception:
+                return True
+        return True
+
+    def _update_pg1_probe_styles(self):
+        dark_bg = self._pg1_probe_dark_bg()
+        grid_col = (255, 255, 255, 110) if dark_bg else (0, 0, 0, 95)
+        band_col = (255, 255, 255, 90) if dark_bg else (0, 0, 0, 75)
+        legend_fg = (220, 220, 220) if dark_bg else (30, 30, 30)
+        legend_fill = (0, 0, 0, 130) if dark_bg else (255, 255, 255, 180)
+        legend_border = (255, 255, 255, 50) if dark_bg else (0, 0, 0, 60)
+        label_fg = (255, 255, 255) if dark_bg else (20, 20, 20)
+        label_fill = (0, 0, 0, 170) if dark_bg else (255, 255, 255, 215)
+        label_border = (255, 255, 255, 80) if dark_bg else (0, 0, 0, 90)
+
+        if self._pg1_probe_grid_lines is not None:
+            self._pg1_probe_grid_lines.setPen(pg.mkPen(grid_col, width=1, style=QtCore.Qt.DotLine, cosmetic=True))
+        if self._pg1_probe_zero_lines is not None:
+            self._pg1_probe_zero_lines.setPen(pg.mkPen((140, 255, 180, 170) if dark_bg else (0, 120, 60, 180), width=1, style=QtCore.Qt.DotLine, cosmetic=True))
+        if getattr(self, "_pg1_probe_zero_baseline", None) is not None:
+            self._pg1_probe_zero_baseline.setPen(pg.mkPen((140, 255, 180, 210) if dark_bg else (0, 120, 60, 210), width=1, cosmetic=True))
+        if self._pg1_probe_label is not None:
+            self._pg1_probe_label.setColor(label_fg)
+            self._pg1_probe_label.fill = pg.mkBrush(*label_fill)
+            self._pg1_probe_label.border = pg.mkPen(label_border)
+        if self._pg1_probe_legend is not None:
+            self._pg1_probe_legend.setColor(legend_fg)
+            self._pg1_probe_legend.fill = pg.mkBrush(*legend_fill)
+            self._pg1_probe_legend.border = pg.mkPen(legend_border)
+        for line in self._pg1_probe_band_lines:
+            line.setPen(pg.mkPen(band_col, width=1, style=QtCore.Qt.DotLine, cosmetic=True))
+
+    def _cache_pg1_channel_band(self, ch, band_lo, band_hi, phys_lo, phys_hi, x=None, y_scaled=None, y_phys=None, zero_scaled=None):
+        x_arr = np.asarray(x, dtype=float) if x is not None else np.empty(0, dtype=float)
+        y_scaled_arr = np.asarray(y_scaled, dtype=float) if y_scaled is not None else np.empty(0, dtype=float)
+        y_phys_arr = np.asarray(y_phys, dtype=float) if y_phys is not None else None
+
+        finite = np.isfinite(x_arr) & np.isfinite(y_scaled_arr)
+        if y_phys_arr is not None:
+            finite &= np.isfinite(y_phys_arr)
+
+        if np.any(finite):
+            valid_idx = np.flatnonzero(finite)
+            x_arr = x_arr[valid_idx]
+            y_scaled_arr = y_scaled_arr[valid_idx]
+            if y_phys_arr is not None:
+                y_phys_arr = y_phys_arr[valid_idx]
+        else:
+            x_arr = np.empty(0, dtype=float)
+            y_scaled_arr = np.empty(0, dtype=float)
+            y_phys_arr = np.empty(0, dtype=float) if y_phys_arr is not None else None
+
+        self._pg1_channel_cache.append({
+            "ch": ch,
+            "band_lo": float(min(band_lo, band_hi)),
+            "band_hi": float(max(band_lo, band_hi)),
+            "phys_lo": float(phys_lo),
+            "phys_hi": float(phys_hi),
+            "zero_scaled": None if zero_scaled is None else float(zero_scaled),
+            "zero_visible": (
+                zero_scaled is not None
+                and float(min(band_lo, band_hi)) <= float(zero_scaled) <= float(max(band_lo, band_hi))
+            ),
+            "x": x_arr,
+            "y_scaled": y_scaled_arr,
+            "y_phys": y_phys_arr,
+            "_peak_cache": None,
+        })
+
+    def _toggle_zero_lines(self):
+        self.cfg_show_zero_line = not bool(getattr(self, "cfg_show_zero_line", True))
+        if hasattr(self, "cfg") and isinstance(self.cfg, dict):
+            self.cfg.setdefault("par", {})
+            self.cfg["par"]["show-lines"] = "1" if self.cfg_show_zero_line else "0"
+        self._update_pg1()
+
+    def _set_y0_curve_pen(self, idx, color):
+        if idx < 0 or idx >= len(self.y0_curves):
+            return
+        pen = pg.mkPen(color, width=2, cosmetic=True)
+        pen.setDashPattern([8, 4])
+        self.y0_curves[idx].setPen(pen)
+
+    def _limit_probe_indices(self, idx, cap=256):
+        idx = np.asarray(idx, dtype=int)
+        if idx.size <= cap:
+            return idx
+        picks = np.linspace(0, idx.size - 1, cap, dtype=int)
+        return idx[picks]
+
+    def _envelope_prominence(self, env_vals, idx, half_win, want_max):
+        n = env_vals.size
+        lo = max(0, idx - half_win)
+        hi = min(n, idx + half_win + 1)
+        if idx <= lo or idx + 1 >= hi:
+            return 0.0
+        left = env_vals[lo:idx]
+        right = env_vals[idx + 1:hi]
+        if left.size == 0 or right.size == 0:
+            return 0.0
+        if want_max:
+            base = max(float(np.min(left)), float(np.min(right)))
+            return float(env_vals[idx] - base)
+        base = min(float(np.max(left)), float(np.max(right)))
+        return float(base - env_vals[idx])
+
+    def _merge_probe_candidates(self, cand_bins, cand_src_idx, cand_scores, min_sep_bins):
+        cand_bins = np.asarray(cand_bins, dtype=int)
+        cand_src_idx = np.asarray(cand_src_idx, dtype=int)
+        cand_scores = np.asarray(cand_scores, dtype=float)
+        if cand_bins.size == 0:
+            return np.empty(0, dtype=int)
+        order = np.argsort(cand_bins)
+        cand_bins = cand_bins[order]
+        cand_src_idx = cand_src_idx[order]
+        cand_scores = cand_scores[order]
+        keep = []
+        cluster_anchor = None
+        best_src = None
+        best_score = None
+        for b, src_idx, score in zip(cand_bins, cand_src_idx, cand_scores):
+            if cluster_anchor is None or abs(int(b) - cluster_anchor) >= min_sep_bins:
+                if best_src is not None:
+                    keep.append(int(best_src))
+                cluster_anchor = int(b)
+                best_src = int(src_idx)
+                best_score = float(score)
+            elif best_score is None or score > best_score:
+                best_src = int(src_idx)
+                best_score = float(score)
+        if best_src is not None:
+            keep.append(int(best_src))
+        return np.asarray(keep, dtype=int)
+
+    def _build_probe_envelope(self, tx, ys, idx_view, vx0, vx1, width_px):
+        if idx_view.size == 0:
+            return None
+        span = max(vx1 - vx0, 1e-12)
+        bins = np.floor((tx[idx_view] - vx0) * ((width_px - 1) / span)).astype(int)
+        bins = np.clip(bins, 0, width_px - 1)
+
+        ys_view = ys[idx_view].astype(float)
+
+        # Vectorised bin statistics -- avoid Python loop over potentially large arrays.
+        # Mean / count via bincount.
+        cnt_y = np.bincount(bins, minlength=width_px)
+        sum_y = np.bincount(bins, weights=ys_view, minlength=width_px)
+
+        # Max per bin: sort descending, keep first occurrence of each bin.
+        order_max = np.argsort(-ys_view)
+        bins_max = bins[order_max]
+        src_max = idx_view[order_max]
+        _, first_max = np.unique(bins_max, return_index=True)
+        occupied_max = bins_max[first_max]
+
+        max_y = np.full(width_px, -np.inf, dtype=float)
+        max_idx = np.full(width_px, -1, dtype=int)
+        max_y[occupied_max] = ys_view[order_max[first_max]]
+        max_idx[occupied_max] = src_max[first_max]
+
+        # Min per bin: sort ascending, keep first occurrence of each bin.
+        order_min = np.argsort(ys_view)
+        bins_min = bins[order_min]
+        src_min = idx_view[order_min]
+        _, first_min = np.unique(bins_min, return_index=True)
+        occupied_min = bins_min[first_min]
+
+        min_y = np.full(width_px, np.inf, dtype=float)
+        min_idx = np.full(width_px, -1, dtype=int)
+        min_y[occupied_min] = ys_view[order_min[first_min]]
+        min_idx[occupied_min] = src_min[first_min]
+
+        max_valid = np.flatnonzero(max_idx >= 0)
+        min_valid = np.flatnonzero(min_idx >= 0)
+        ctr_valid = np.flatnonzero(cnt_y > 0)
+        return {
+            "max_bins": max_valid,
+            "max_vals": max_y[max_valid],
+            "max_src_idx": max_idx[max_valid],
+            "min_bins": min_valid,
+            "min_vals": min_y[min_valid],
+            "min_src_idx": min_idx[min_valid],
+            "ctr_bins": ctr_valid,
+            "ctr_vals": sum_y[ctr_valid] / np.maximum(cnt_y[ctr_valid], 1),
+        }
+
+    def _snap_probe_candidate_to_extremum(self, tx, ys, idx_view, vx0, vx1, width_px, cand_bins, want_max, search_bins=8):
+        cand_bins = np.asarray(cand_bins, dtype=int)
+        if cand_bins.size == 0 or idx_view.size == 0:
+            return np.empty(0, dtype=int)
+        span = max(vx1 - vx0, 1e-12)
+        bin_dt = span / max(float(width_px - 1), 1.0)
+        tx_view = tx[idx_view]
+        ys_view = ys[idx_view]
+        out = []
+        for b in cand_bins:
+            x_target = vx0 + float(b) * bin_dt
+            lo = x_target - search_bins * bin_dt
+            hi = x_target + search_bins * bin_dt
+            mask = (tx_view >= lo) & (tx_view <= hi)
+            if not np.any(mask):
+                nearest = int(np.argmin(np.abs(tx_view - x_target)))
+                out.append(int(idx_view[nearest]))
+                continue
+            local_src = idx_view[mask]
+            local_y = ys_view[mask]
+            pick = int(np.argmax(local_y) if want_max else np.argmin(local_y))
+            out.append(int(local_src[pick]))
+        return np.asarray(out, dtype=int)
+
+    def _smooth_probe_envelope(self, vals, win):
+        vals = np.asarray(vals, dtype=float)
+        if vals.size == 0 or win <= 1:
+            return vals
+        # Cap window to signal length so np.convolve(mode='same') never returns
+        # a longer array than the input (it returns max(len(a), len(kernel))).
+        win = int(max(1, min(win, vals.size)))
+        if win % 2 == 0:
+            win -= 1   # round down to stay ≤ vals.size and keep odd
+        if win <= 1:
+            return vals
+        kernel = np.ones(win, dtype=float) / float(win)
+        return np.convolve(vals, kernel, mode='same')
+
+    def _plateau_aware_extrema(self, vals, want_max):
+        vals = np.asarray(vals, dtype=float)
+        if vals.size < 3:
+            return np.empty(0, dtype=int)
+        d = np.diff(vals)
+        s = np.sign(d)
+        if s.size == 0:
+            return np.empty(0, dtype=int)
+
+        # Fill flat runs from the left (propagates the last non-zero sign
+        # forward) and from the right (propagates the next non-zero sign
+        # backward).  This gives two views of each plateau:
+        #   left-fill  → last bin before the descent  = plateau END
+        #   right-fill → first bin after the ascent   = plateau START
+        # Taking the midpoint of (start, end) centres the returned index on
+        # the plateau, which for a box-smoothed spike equals the original
+        # sample position.  Without this, a 3-bin smoothed spike returns
+        # the right-edge bin, causing an off-by-one that makes the cursor
+        # snap to a baseline sample beside the true peak.
+        left = s.copy()
+        for i in range(1, left.size):
+            if left[i] == 0:
+                left[i] = left[i - 1]
+        right = s.copy()
+        for i in range(right.size - 2, -1, -1):
+            if right[i] == 0:
+                right[i] = right[i + 1]
+
+        if want_max:
+            ends   = np.where((left[:-1]  > 0) & (left[1:]  < 0))[0] + 1
+            starts = np.where((right[:-1] > 0) & (right[1:] < 0))[0] + 1
+        else:
+            ends   = np.where((left[:-1]  < 0) & (left[1:]  > 0))[0] + 1
+            starts = np.where((right[:-1] < 0) & (right[1:] > 0))[0] + 1
+
+        if ends.size == 0:
+            return np.empty(0, dtype=int)
+        # When counts agree (the normal case) return plateau centres.
+        # Fall back to ends if edge effects produce a count mismatch.
+        if starts.size == ends.size:
+            return ((starts + ends) // 2).astype(int)
+        return ends.astype(int)
+
+    def _candidate_scores(self, positions, values, half_win, want_max):
+        positions = np.asarray(positions, dtype=int)
+        if positions.size == 0:
+            return np.empty(0, dtype=float)
+        return np.asarray(
+            [self._envelope_prominence(values, int(pos), half_win, want_max) for pos in positions],
+            dtype=float,
+        )
+
+    def _get_probe_peaks(self, entry):
+        tx = entry["x"]
+        ys = entry["y_scaled"]
+        if tx.size < 3 or ys.size < 3:
+            return np.empty(0, dtype=int), np.empty(0, dtype=int)
+
+        vb = self.ui.pg1.getPlotItem().getViewBox()
+        vx0, vx1 = vb.viewRange()[0]
+        width_px = max(16, int(round(float(vb.width() or 1.0))))
+        cache_key = (round(vx0, 6), round(vx1, 6), width_px, tx.size)
+        cache = entry.get("_peak_cache")
+        if cache is not None and cache.get("key") == cache_key:
+            return cache["max_idx"], cache["min_idx"]
+
+        in_view = (tx >= vx0) & (tx <= vx1)
+        if np.count_nonzero(in_view) < 3:
+            return np.empty(0, dtype=int), np.empty(0, dtype=int)
+
+        idx_view = np.flatnonzero(in_view)
+        env = self._build_probe_envelope(tx, ys, idx_view, vx0, vx1, width_px)
+        if env is None:
+            return np.empty(0, dtype=int), np.empty(0, dtype=int)
+
+        max_bins = env["max_bins"]
+        min_bins = env["min_bins"]
+        max_src_idx = env["max_src_idx"]
+        min_src_idx = env["min_src_idx"]
+        ctr_bins = env["ctr_bins"]
+        ctr_vals = env["ctr_vals"]
+
+        if ctr_vals.size < 3:
+            return np.empty(0, dtype=int), np.empty(0, dtype=int)
+
+        # ---------------------------------------------------------------
+        # Two-scale hierarchical peak detection
+        #
+        # COARSE scale  heavy smoothing + large prominence window
+        #   Correctly scores broad/slow peaks (airflow) whose valleys sit
+        #   far from the crest.  Uses only the per-bin envelope (max/min),
+        #   not the mean, because for an alternating signal the per-bin
+        #   mean is dragged toward zero when both crest and trough of the
+        #   same cycle fall in the same bin.
+        #   min_sep_coarse prevents double-marking the same slow peak.
+        #
+        # FINE scale    minimal smoothing (win=3) + moderate prominence window
+        #   smooth_win=3 is the minimum needed so that a single-bin R-peak
+        #   (zoomed-out ECG) still produces a clear local maximum; larger
+        #   windows shift the smoothed maximum to land *between* closely-
+        #   spaced peaks rather than on them.
+        #   min_sep_fine=3 allows consecutive heart beats to coexist.
+        #
+        # Merge strategy:
+        #   Collect coarse and fine candidates independently, then pool them
+        #   and merge by pixel-bin position with min_sep_fine.  The merge
+        #   selects the highest-scoring candidate within each cluster, so
+        #   the coarse (better-scored for broad peaks) and fine (better-scored
+        #   for narrow spikes) naturally win in their respective domains.
+        # ---------------------------------------------------------------
+
+        band_span = max(1e-12, float(entry["band_hi"] - entry["band_lo"]))
+        amp_thresh = max(0.01 * band_span, 1e-4)
+
+        span = max(vx1 - vx0, 1e-12)
+
+        # ---------------------------------------------------------------
+        # All coarse-scale parameters derive from one anchor: coarse_px,
+        # the number of pixel-bins that define a "broad visible peak".
+        # ~1/12 of the view is a reasonable perceptual boundary between
+        # "narrow spike" and "broad wave": at 1200 px it gives ~100 px,
+        # which is roughly the width of one respiratory cycle at typical
+        # clinical zoom.  All constants are therefore in units of this
+        # one value, not independently tuned fractions of width_px.
+        # ---------------------------------------------------------------
+        coarse_px = max(8, width_px // 12)          # e.g. 100 for 1200 px
+
+        smooth_win_coarse = coarse_px | 1            # odd, ~1 coarse feature wide
+        half_win_coarse   = coarse_px                # see ±1 coarse feature for prominence
+        min_sep_coarse    = max(4, coarse_px // 2)   # distinct coarse peaks half-feature apart
+
+        max_env_c = self._smooth_probe_envelope(env["max_vals"], smooth_win_coarse)
+        min_env_c = self._smooth_probe_envelope(env["min_vals"], smooth_win_coarse)
+
+        def _coarse_candidates(env_vals, env_src_idx, env_bins_arr, want_max):
+            pos = self._plateau_aware_extrema(env_vals, want_max)
+            if pos.size == 0 or env_src_idx.size == 0:
+                return np.empty(0, int), np.empty(0, int), np.empty(0, float)
+            scores = self._candidate_scores(pos, env_vals, half_win_coarse, want_max)
+            mask = scores >= amp_thresh
+            return env_bins_arr[pos][mask], env_src_idx[pos][mask], scores[mask]
+
+        crs_max_b, crs_max_s, crs_max_sc = _coarse_candidates(max_env_c, max_src_idx, max_bins, True)
+        crs_min_b, crs_min_s, crs_min_sc = _coarse_candidates(min_env_c, min_src_idx, min_bins, False)
+
+        # ---- fine parameters ----
+        # smooth_win=3: minimal blur so single-bin spikes survive.  A larger
+        # window shifts smoothed maxima to land *between* closely-spaced
+        # R-peaks rather than on them.
+        # half_win_fine: ¼ of the coarse scale is enough to see the valley
+        # beside a narrow spike.  min_sep_fine=3 is the perceptual pixel floor.
+        smooth_win_fine = 3
+        half_win_fine   = max(4, coarse_px // 4)   # ~25 for 1200 px
+        min_sep_fine    = 3
+
+        ctr_vals_f = self._smooth_probe_envelope(ctr_vals,        smooth_win_fine)
+        max_env_f  = self._smooth_probe_envelope(env["max_vals"], smooth_win_fine)
+        min_env_f  = self._smooth_probe_envelope(env["min_vals"], smooth_win_fine)
+
+        def _fine_candidates(want_max):
+            bl, bs, bsc = [], [], []
+            # envelope signal
+            env_vals  = max_env_f  if want_max else min_env_f
+            env_src   = max_src_idx if want_max else min_src_idx
+            env_bins2 = max_bins    if want_max else min_bins
+            if env_src.size:
+                pos = self._plateau_aware_extrema(env_vals, want_max)
+                if pos.size:
+                    sc = self._candidate_scores(pos, env_vals, half_win_fine, want_max)
+                    m = sc >= amp_thresh
+                    cand_bins = env_bins2[pos][m]
+                    # Snap to actual sample extremum within ±(smooth_win_fine+1) bins.
+                    # Corrects any residual off-by-one from plateau centre rounding.
+                    snapped = self._snap_probe_candidate_to_extremum(
+                        tx, ys, idx_view, vx0, vx1, width_px, cand_bins, want_max,
+                        search_bins=smooth_win_fine + 1)
+                    bl.append(cand_bins); bs.append(snapped); bsc.append(sc[m])
+            # mean signal
+            pos = self._plateau_aware_extrema(ctr_vals_f, want_max)
+            if pos.size:
+                snapped = self._snap_probe_candidate_to_extremum(
+                    tx, ys, idx_view, vx0, vx1, width_px, ctr_bins[pos], want_max)
+                sc = self._candidate_scores(pos, ctr_vals_f, half_win_fine, want_max)
+                m = sc >= amp_thresh
+                bl.append(ctr_bins[pos][m]); bs.append(snapped[m]); bsc.append(sc[m])
+            if not bl:
+                return np.empty(0, int), np.empty(0, int), np.empty(0, float)
+            return np.concatenate(bl), np.concatenate(bs), np.concatenate(bsc)
+
+        fine_max_b, fine_max_s, fine_max_sc = _fine_candidates(True)
+        fine_min_b, fine_min_s, fine_min_sc = _fine_candidates(False)
+
+        # Combine coarse and fine candidates and merge by bin position.
+        # No suppression step: suppressing fine peaks near coarse ones was
+        # silencing ECG R-peaks whose amplitude is modulated by respiration
+        # (the coarse max-envelope shows a respiratory-frequency oscillation,
+        # which looked like a valid coarse peak and blanked nearby R-peaks).
+        # With the plateau-centre fix both paths snap to the same source sample
+        # for the same physical peak, so the merge naturally deduplicates them.
+        def _combine(cb, cs, csc, fb, fs, fsc):
+            if cb.size and fb.size:
+                b = np.concatenate([cb, fb])
+                s = np.concatenate([cs, fs])
+                sc = np.concatenate([csc, fsc])
+            elif cb.size:
+                b, s, sc = cb, cs, csc
+            elif fb.size:
+                b, s, sc = fb, fs, fsc
+            else:
+                return np.empty(0, int)
+            return self._merge_probe_candidates(b, s, sc, min_sep_fine)
+
+        max_idx = _combine(crs_max_b, crs_max_s, crs_max_sc, fine_max_b, fine_max_s, fine_max_sc)
+        min_idx = _combine(crs_min_b, crs_min_s, crs_min_sc, fine_min_b, fine_min_s, fine_min_sc)
+
+        max_idx = self._limit_probe_indices(max_idx, cap=256)
+        min_idx = self._limit_probe_indices(min_idx, cap=256)
+        entry["_peak_cache"] = {"key": cache_key, "max_idx": max_idx, "min_idx": min_idx}
+        return max_idx, min_idx
+
+    def _find_pg1_channel_band(self, y):
+        for entry in self._pg1_channel_cache:
+            if entry["band_lo"] <= y <= entry["band_hi"]:
+                return entry
+        return None
+
+    def _probe_channel_sample(self, entry, x):
+        tx = entry["x"]
+        ty = entry["y_scaled"]
+        if tx.size == 0 or ty.size == 0:
+            return None
+        idx = int(np.argmin(np.abs(tx - float(x))))
+        sample_x = float(tx[idx])
+        sample_y_scaled = float(ty[idx])
+        if entry["y_phys"] is not None and idx < entry["y_phys"].size:
+            sample_val = float(entry["y_phys"][idx])
+        else:
+            band_span = max(1e-12, entry["band_hi"] - entry["band_lo"])
+            frac = (sample_y_scaled - entry["band_lo"]) / band_span
+            sample_val = entry["phys_lo"] + frac * (entry["phys_hi"] - entry["phys_lo"])
+        if not np.isfinite(sample_val):
+            return None
+        return {
+            "sample_x": sample_x,
+            "sample_y_scaled": sample_y_scaled,
+            "sample_val": sample_val,
+        }
+
+    def _show_pg1_probe_band_lines(self):
+        vx0, vx1 = self.ui.pg1.getPlotItem().getViewBox().viewRange()[0]
+        bands = sorted(self._pg1_channel_cache, key=lambda entry: entry["band_lo"])
+        boundaries = []
+        for prev, curr in zip(bands, bands[1:]):
+            y = 0.5 * (prev["band_hi"] + curr["band_lo"])
+            boundaries.append(y)
+
+        for idx, line in enumerate(self._pg1_probe_band_lines):
+            if idx < len(boundaries):
+                y = boundaries[idx]
+                line.setData([vx0, vx1], [y, y])
+                line.show()
+            else:
+                line.setData([], [])
+                line.hide()
+
+    def _pg1_probe_key_active(self, key):
+        return key in self._pg1_probe_keys
+
+    def _set_pg1_probe_key(self, key, active):
+        if active:
+            self._pg1_probe_keys.add(key)
+        else:
+            self._pg1_probe_keys.discard(key)
+
+    def _toggle_pg1_probe_key(self, key):
+        if self._pg1_probe_key_active(key):
+            self._pg1_probe_keys.discard(key)
+        else:
+            self._pg1_probe_keys.add(key)
+
+    def _cycle_pg1_probe_grid(self):
+        self._pg1_probe_grid_idx = (self._pg1_probe_grid_idx + 1) % len(self._pg1_probe_grid_steps)
+
+    def _current_pg1_probe_grid(self):
+        return self._pg1_probe_grid_steps[self._pg1_probe_grid_idx]
+
+    def _build_vertical_segments(self, xs, y0, y1):
+        if xs is None or len(xs) == 0:
+            return np.empty(0, dtype=float), np.empty(0, dtype=float)
+        xs = np.asarray(xs, dtype=float)
+        xdat = np.empty(xs.size * 2, dtype=float)
+        ydat = np.empty(xs.size * 2, dtype=float)
+        xdat[0::2] = xs
+        xdat[1::2] = xs
+        ydat[0::2] = y0
+        ydat[1::2] = y1
+        return xdat, ydat
+
+    def _update_pg1_probe_legend(self, vb):
+        if self._pg1_probe_legend is None:
+            return
+        vx0, vx1 = vb.viewRange()[0]
+        legend = "Probe toggles: Z zero-x | P peaks | A annots | S stats | G grid | Y y=0 | Space pin"
+        if bool(getattr(self, "_pg1_probe_pinned", False)):
+            legend += " [pinned]"
+        grid = self._current_pg1_probe_grid()
+        if grid is not None:
+            grid_txt = self._format_pg1_probe_dt(grid)
+            legend += f" | grid={grid_txt}"
+        self._pg1_probe_legend.setText(legend)
+        self._pg1_probe_legend.setPos(0.5 * (vx0 + vx1), 0.955)
+        self._pg1_probe_legend.show()
+
+    def _update_pg1_probe_grid(self, vb):
+        if self._pg1_probe_grid_lines is None:
+            return
+        step = self._current_pg1_probe_grid()
+        if step is None:
+            self._pg1_probe_grid_lines.setData([], [])
+            self._pg1_probe_grid_lines.hide()
+            return
+        vx0, vx1 = vb.viewRange()[0]
+        start = np.floor(vx0 / step) * step
+        xs = np.arange(start, vx1 + step, step)
+        xs = xs[(xs >= vx0) & (xs <= vx1)]
+        xdat, ydat = self._build_vertical_segments(xs, 0.0, 1.0)
+        self._pg1_probe_grid_lines.setData(xdat, ydat)
+        self._pg1_probe_grid_lines.show()
+
+    def _update_pg1_probe_zero_crossings(self, entry):
+        if self._pg1_probe_zero_lines is None or self._pg1_probe_zero_baseline is None:
+            return
+        if not self._pg1_probe_key_active("Z"):
+            self._pg1_probe_zero_lines.setData([], [])
+            self._pg1_probe_zero_lines.hide()
+            self._pg1_probe_zero_baseline.setData([], [])
+            self._pg1_probe_zero_baseline.hide()
+            return
+        tx = entry["x"]
+        ys = entry["y_scaled"]
+        zero_scaled = entry.get("zero_scaled", None)
+        zero_visible = bool(entry.get("zero_visible", False))
+        if tx.size == 0 or ys.size == 0 or zero_scaled is None or not zero_visible:
+            self._pg1_probe_zero_lines.setData([], [])
+            self._pg1_probe_zero_lines.hide()
+            self._pg1_probe_zero_baseline.setData([], [])
+            self._pg1_probe_zero_baseline.hide()
+            return
+
+        self._pg1_probe_zero_baseline.setData([tx[0], tx[-1]], [zero_scaled, zero_scaled])
+        self._pg1_probe_zero_baseline.show()
+
+        vals = entry["y_phys"] if entry["y_phys"] is not None else (ys - zero_scaled)
+        tx = entry["x"]
+        if tx.size < 2 or vals is None or vals.size < 2:
+            self._pg1_probe_zero_lines.setData([], [])
+            self._pg1_probe_zero_lines.hide()
+            self._pg1_probe_zero_baseline.setData([], [])
+            self._pg1_probe_zero_baseline.hide()
+            return
+        v0 = vals[:-1]
+        v1 = vals[1:]
+        x0 = tx[:-1]
+        x1 = tx[1:]
+        mask = ((v0 == 0) | (v1 == 0) | ((v0 < 0) & (v1 > 0)) | ((v0 > 0) & (v1 < 0)))
+        if not np.any(mask):
+            self._pg1_probe_zero_lines.setData([], [])
+            self._pg1_probe_zero_lines.hide()
+            return
+        x0m = x0[mask]
+        x1m = x1[mask]
+        v0m = v0[mask]
+        v1m = v1[mask]
+        denom = v1m - v0m
+        frac = np.where(np.abs(denom) > 1e-12, -v0m / denom, 0.0)
+        xs = x0m + frac * (x1m - x0m)
+        xdat, ydat = self._build_vertical_segments(xs, entry["band_lo"], entry["band_hi"])
+        self._pg1_probe_zero_lines.setData(xdat, ydat)
+        self._pg1_probe_zero_lines.show()
+
+    def _update_pg1_probe_peaks(self, entry):
+        if self._pg1_probe_peak_max is None or self._pg1_probe_peak_min is None:
+            return
+        if not self._pg1_probe_key_active("P"):
+            self._pg1_probe_peak_max.setData([], [])
+            self._pg1_probe_peak_min.setData([], [])
+            self._pg1_probe_peak_max.hide()
+            self._pg1_probe_peak_min.hide()
+            return
+        vals = entry["y_phys"] if entry["y_phys"] is not None else entry["y_scaled"]
+        tx = entry["x"]
+        ys = entry["y_scaled"]
+        if tx.size < 3 or vals is None or vals.size < 3 or ys.size < 3:
+            self._pg1_probe_peak_max.setData([], [])
+            self._pg1_probe_peak_min.setData([], [])
+            self._pg1_probe_peak_max.hide()
+            self._pg1_probe_peak_min.hide()
+            return
+        max_idx, min_idx = self._get_probe_peaks(entry)
+        self._pg1_probe_peak_max.setData(tx[max_idx], ys[max_idx])
+        self._pg1_probe_peak_min.setData(tx[min_idx], ys[min_idx])
+        self._pg1_probe_peak_max.setVisible(max_idx.size > 0)
+        self._pg1_probe_peak_min.setVisible(min_idx.size > 0)
+
+    def _probe_channel_peak_sample(self, entry, x):
+        tx = entry["x"]
+        ys = entry["y_scaled"]
+        vals = entry["y_phys"] if entry["y_phys"] is not None else ys
+        if tx.size < 3 or ys.size < 3 or vals is None or vals.size < 3:
+            return None
+        max_idx, min_idx = self._get_probe_peaks(entry)
+        peak_idx = np.sort(np.concatenate([max_idx, min_idx]))
+        if peak_idx.size == 0:
+            return None
+        nearest = int(np.argmin(np.abs(tx[peak_idx] - float(x))))
+        idx = int(peak_idx[nearest])
+        return {
+            "sample_x": float(tx[idx]),
+            "sample_y_scaled": float(ys[idx]),
+            "sample_val": float(vals[idx]),
+        }
+
+    def _probe_annotations_at_time(self, xpos):
+        hits = []
+        if not hasattr(self, "annot_mgr") or self.annot_mgr is None:
+            return hits
+        for name, track in self.annot_mgr.tracks.items():
+            if name == "__#gaps__":
+                continue
+            x0 = np.asarray(track.get("x0", []), dtype=float)
+            x1 = np.asarray(track.get("x1", []), dtype=float)
+            if x0.size == 0 or x1.size == 0:
+                continue
+            if np.any((x0 <= xpos) & (x1 >= xpos)):
+                hits.append(name)
+        return hits
+
+    def _resolve_pg1_probe_entry(self, y, locked_entry=None):
+        if locked_entry is not None:
+            return locked_entry
+        return self._find_pg1_channel_band(y)
+
+    def _format_pg1_probe_value(self, value):
+        aval = abs(float(value))
+        if aval >= 100:
+            return f"{value:.1f}"
+        if aval >= 10:
+            return f"{value:.2f}"
+        return f"{value:.3f}"
+
+    def _format_pg1_probe_dt(self, dt_seconds):
+        dt = abs(float(dt_seconds))
+        if dt < 60:
+            return f"{dt:.2f} s"
+        if dt < 3600:
+            return f"{dt / 60.0:.2f} min"
+        return f"{dt / 3600.0:.2f} h"
+
+    def _probe_channel_window_stats(self, entry, sample_a, sample_b):
+        tx = entry["x"]
+        if tx.size == 0:
+            return None
+
+        vals = entry["y_phys"] if entry["y_phys"] is not None else entry["y_scaled"]
+        if vals is None or vals.size == 0:
+            return None
+
+        lo = min(sample_a["sample_x"], sample_b["sample_x"])
+        hi = max(sample_a["sample_x"], sample_b["sample_x"])
+        mask = (tx >= lo) & (tx <= hi)
+        if not np.any(mask):
+            return None
+
+        win = vals[mask]
+        if win.size == 0:
+            return None
+
+        vmin = float(np.min(win))
+        vmax = float(np.max(win))
+        return {
+            "min": vmin,
+            "max": vmax,
+            "p2p": vmax - vmin,
+            "mean": float(np.mean(win)),
+        }
+
+    def _update_pg1_probe(self, scene_pos, start_entry=None, start_sample=None):
+        vb = self.ui.pg1.getPlotItem().getViewBox()
+        if not vb.sceneBoundingRect().contains(scene_pos):
+            self._hide_pg1_probe()
+            return None, None
+
+        x = float(vb.mapSceneToView(scene_pos).x())
+        y = float(vb.mapSceneToView(scene_pos).y())
+
+        if self._pg1_probe_line is not None:
+            self._pg1_probe_line.setPos(x)
+            self._pg1_probe_line.show()
+
+        self._update_pg1_probe_grid(vb)
+        self._update_pg1_probe_legend(vb)
+        self._show_pg1_probe_band_lines()
+        entry = self._resolve_pg1_probe_entry(y, start_entry)
+        if entry is not None and self._pg1_probe_key_active("P"):
+            sample = self._probe_channel_peak_sample(entry, x)
+            if sample is None:
+                sample = self._probe_channel_sample(entry, x)
+        else:
+            sample = self._probe_channel_sample(entry, x) if entry is not None else None
+
+        if sample is None:
+            if self._pg1_probe_start_sample_line is not None:
+                self._pg1_probe_start_sample_line.setData([], [])
+                self._pg1_probe_start_sample_line.hide()
+            if self._pg1_probe_sample_line is not None:
+                self._pg1_probe_sample_line.setData([], [])
+                self._pg1_probe_sample_line.hide()
+            if self._pg1_probe_span_line is not None:
+                self._pg1_probe_span_line.setData([], [])
+                self._pg1_probe_span_line.hide()
+            if self._pg1_probe_zero_lines is not None:
+                self._pg1_probe_zero_lines.setData([], [])
+                self._pg1_probe_zero_lines.hide()
+            if self._pg1_probe_peak_max is not None:
+                self._pg1_probe_peak_max.setData([], [])
+                self._pg1_probe_peak_max.hide()
+            if self._pg1_probe_peak_min is not None:
+                self._pg1_probe_peak_min.setData([], [])
+                self._pg1_probe_peak_min.hide()
+            if self._pg1_probe_label is not None:
+                self._pg1_probe_label.hide()
+            return entry, sample
+
+        self._update_pg1_probe_zero_crossings(entry)
+        self._update_pg1_probe_peaks(entry)
+
+        if self._pg1_probe_sample_line is not None:
+            self._pg1_probe_sample_line.setData(
+                [sample["sample_x"], sample["sample_x"]],
+                [entry["band_lo"], entry["band_hi"]],
+            )
+            self._pg1_probe_sample_line.show()
+
+        units = self.units.get(entry["ch"], "")
+        label = f'{entry["ch"]}: {self._format_pg1_probe_value(sample["sample_val"])}'
+        if units:
+            label += f" {units}"
+        if (
+            start_entry is not None
+            and start_sample is not None
+            and start_entry.get("ch") == entry["ch"]
+        ):
+            span = abs(sample["sample_val"] - start_sample["sample_val"])
+            dt = abs(sample["sample_x"] - start_sample["sample_x"])
+            stats = self._probe_channel_window_stats(entry, start_sample, sample) if self._pg1_probe_key_active("S") else None
+            if self._pg1_probe_start_sample_line is not None:
+                self._pg1_probe_start_sample_line.setData(
+                    [start_sample["sample_x"], start_sample["sample_x"]],
+                    [entry["band_lo"], entry["band_hi"]],
+                )
+                self._pg1_probe_start_sample_line.show()
+            if self._pg1_probe_span_line is not None:
+                self._pg1_probe_span_line.setData(
+                    [start_sample["sample_x"], sample["sample_x"]],
+                    [start_sample["sample_y_scaled"], sample["sample_y_scaled"]],
+                )
+                self._pg1_probe_span_line.show()
+            label = (
+                f'{entry["ch"]}\n'
+                f'start: {self._format_pg1_probe_value(start_sample["sample_val"])}'
+                + (f" {units}" if units else "")
+                + f'\ncurrent: {self._format_pg1_probe_value(sample["sample_val"])}'
+                + (f" {units}" if units else "")
+                + f'\ndelta: {self._format_pg1_probe_value(span)}'
+                + (f" {units}" if units else "")
+                + f'\ndt: {self._format_pg1_probe_dt(dt)}'
+            )
+            if stats is not None:
+                label += (
+                    f'\nmin: {self._format_pg1_probe_value(stats["min"])}'
+                    + (f" {units}" if units else "")
+                    + f'\nmax: {self._format_pg1_probe_value(stats["max"])}'
+                    + (f" {units}" if units else "")
+                    + f'\np2p: {self._format_pg1_probe_value(stats["p2p"])}'
+                    + (f" {units}" if units else "")
+                    + f'\nmean: {self._format_pg1_probe_value(stats["mean"])}'
+                    + (f" {units}" if units else "")
+                )
+        else:
+            if self._pg1_probe_start_sample_line is not None:
+                self._pg1_probe_start_sample_line.setData([], [])
+                self._pg1_probe_start_sample_line.hide()
+            if self._pg1_probe_span_line is not None:
+                self._pg1_probe_span_line.setData([], [])
+                self._pg1_probe_span_line.hide()
+
+        if self._pg1_probe_key_active("A"):
+            ann_hits = self._probe_annotations_at_time(sample["sample_x"])
+            if ann_hits:
+                shown = ann_hits[:6]
+                suffix = " ..." if len(ann_hits) > 6 else ""
+                label += "\nannots: " + ", ".join(shown) + suffix
+
+        if self._pg1_probe_label is not None:
+            vx0, vx1 = vb.viewRange()[0]
+            span_active = (
+                start_entry is not None
+                and start_sample is not None
+                and start_entry.get("ch") == entry["ch"]
+            )
+            ref_x = start_sample["sample_x"] if span_active else sample["sample_x"]
+            other_x = sample["sample_x"] if span_active else x
+            place_right = other_x < ref_x
+            anchor_x = 0 if place_right else 1
+            self._pg1_probe_label.setAnchor((anchor_x, 0.5))
+            xoff = 0.01 * (vx1 - vx0)
+            xpos = ref_x + xoff if place_right else ref_x - xoff
+            ypos = min(entry["band_hi"] - 0.01, max(entry["band_lo"] + 0.01, 0.5 * (entry["band_lo"] + entry["band_hi"])))
+            self._pg1_probe_label.setText(label)
+            self._pg1_probe_label.setPos(xpos, ypos)
+            self._pg1_probe_label.show()
+
+        return entry, sample
+
+    def _hide_pg1_probe(self):
+        if self._pg1_probe_line is not None:
+            self._pg1_probe_line.hide()
+        if self._pg1_probe_start_sample_line is not None:
+            self._pg1_probe_start_sample_line.setData([], [])
+            self._pg1_probe_start_sample_line.hide()
+        if self._pg1_probe_sample_line is not None:
+            self._pg1_probe_sample_line.setData([], [])
+            self._pg1_probe_sample_line.hide()
+        if self._pg1_probe_span_line is not None:
+            self._pg1_probe_span_line.setData([], [])
+            self._pg1_probe_span_line.hide()
+        if self._pg1_probe_label is not None:
+            self._pg1_probe_label.hide()
+        if self._pg1_probe_legend is not None:
+            self._pg1_probe_legend.hide()
+        if self._pg1_probe_grid_lines is not None:
+            self._pg1_probe_grid_lines.setData([], [])
+            self._pg1_probe_grid_lines.hide()
+        if self._pg1_probe_zero_lines is not None:
+            self._pg1_probe_zero_lines.setData([], [])
+            self._pg1_probe_zero_lines.hide()
+        if getattr(self, "_pg1_probe_zero_baseline", None) is not None:
+            self._pg1_probe_zero_baseline.setData([], [])
+            self._pg1_probe_zero_baseline.hide()
+        if self._pg1_probe_peak_max is not None:
+            self._pg1_probe_peak_max.setData([], [])
+            self._pg1_probe_peak_max.hide()
+        if self._pg1_probe_peak_min is not None:
+            self._pg1_probe_peak_min.setData([], [])
+            self._pg1_probe_peak_min.hide()
+        for line in self._pg1_probe_band_lines:
+            line.setData([], [])
+            line.hide()
         
 
 
@@ -1519,6 +2603,253 @@ class SignalsMixin:
 
 from PySide6 import QtCore, QtGui
 import pyqtgraph as pg
+
+class MainTraceProbe(QtCore.QObject):
+    def __init__(self, plot, owner):
+        super().__init__(plot)
+        self.plot = plot
+        self.pi = plot.getPlotItem() if isinstance(plot, pg.PlotWidget) else plot
+        self.vb = self.pi.getViewBox()
+        self.owner = owner
+        self._active = False
+        self._pinned = False
+        self._start_entry = None
+        self._start_sample = None
+        self._last_scene_pos = None
+        self.pi.scene().installEventFilter(self)
+        try:
+            self.plot.destroyed.connect(self._on_plot_destroyed)
+        except Exception:
+            pass
+
+    def _on_plot_destroyed(self, *_):
+        self.plot = None
+        self.pi = None
+        self.vb = None
+
+    def is_active(self):
+        return self._active
+
+    def is_engaged(self):
+        return self._active or self._pinned
+
+    def is_pinned(self):
+        return self._pinned
+
+    def _sync_owner_pin_state(self):
+        try:
+            self.owner._pg1_probe_pinned = bool(self._pinned)
+        except Exception:
+            pass
+
+    def clear_pinned(self):
+        self._pinned = False
+        self._sync_owner_pin_state()
+        if not self._active:
+            self._start_entry = None
+            self._start_sample = None
+            self._last_scene_pos = None
+
+    def toggle_pinned(self):
+        if self._last_scene_pos is None:
+            return False
+        self._pinned = not self._pinned
+        self._sync_owner_pin_state()
+        if not self._pinned and not self._active:
+            self._start_entry = None
+            self._start_sample = None
+            self._last_scene_pos = None
+            self.owner._hide_pg1_probe()
+        else:
+            self.refresh()
+        return True
+
+    def refresh(self):
+        if (self._active or self._pinned) and self._last_scene_pos is not None and self.plot is not None:
+            if self._start_entry is not None and self._start_sample is not None and self.owner._pg1_probe_key_active("P"):
+                snapped = self.owner._probe_channel_peak_sample(self._start_entry, self._start_sample["sample_x"])
+                if snapped is not None:
+                    self._start_sample = snapped
+            self.owner._update_pg1_probe(self._last_scene_pos, self._start_entry, self._start_sample)
+
+    def eventFilter(self, obj, ev):
+        try:
+            scene = None if self.pi is None else self.pi.scene()
+        except RuntimeError:
+            return False
+        if scene is None or obj is not scene:
+            return False
+
+        et = ev.type()
+        if et == QtCore.QEvent.GraphicsSceneMousePress and ev.button() == QtCore.Qt.LeftButton:
+            try:
+                if self.vb is None or not self.vb.sceneBoundingRect().contains(ev.scenePos()):
+                    return False
+            except RuntimeError:
+                return False
+            try:
+                if self.plot is not None:
+                    self.plot.setFocus()
+            except RuntimeError:
+                return False
+            self._pinned = False
+            self._sync_owner_pin_state()
+            self._active = True
+            self._last_scene_pos = ev.scenePos()
+            self._start_entry, self._start_sample = self.owner._update_pg1_probe(ev.scenePos())
+            return False
+
+        if et == QtCore.QEvent.GraphicsSceneMouseMove and self._active:
+            self._last_scene_pos = ev.scenePos()
+            self.owner._update_pg1_probe(ev.scenePos(), self._start_entry, self._start_sample)
+            return False
+
+        if et == QtCore.QEvent.GraphicsSceneMouseRelease and ev.button() == QtCore.Qt.LeftButton and self._active:
+            self._active = False
+            if not self._pinned:
+                self._start_entry = None
+                self._start_sample = None
+                self._last_scene_pos = None
+                self.owner._hide_pg1_probe()
+            return False
+
+        return False
+
+class MainTraceNavProxy(QtCore.QObject):
+    def __init__(self, plot, owner):
+        super().__init__(plot)
+        self.plot = plot
+        self.owner = owner
+        self.pi = plot.getPlotItem() if isinstance(plot, pg.PlotWidget) else plot
+        self.vb = self.pi.getViewBox()
+        self.plot.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self.plot.installEventFilter(self)
+        viewport = self.plot.viewport() if hasattr(self.plot, "viewport") else None
+        if viewport is not None:
+            viewport.setFocusPolicy(QtCore.Qt.StrongFocus)
+            viewport.installEventFilter(self)
+        try:
+            self.plot.destroyed.connect(self._on_plot_destroyed)
+        except Exception:
+            pass
+
+    def _on_plot_destroyed(self, *_):
+        self.plot = None
+        self.pi = None
+        self.vb = None
+
+    def _selector(self):
+        return getattr(self.owner, "sel", None)
+
+    def _probe(self):
+        return getattr(self.owner, "_pg1_probe", None)
+
+    def _in_plot(self, global_pos):
+        if self.plot is None:
+            return False
+        local = self.plot.mapFromGlobal(global_pos)
+        return self.plot.rect().contains(local)
+
+    def _handle_key(self, ev):
+        sel = self._selector()
+
+        key = ev.key()
+        mods = ev.modifiers()
+        shift = bool(mods & QtCore.Qt.ShiftModifier)
+        ctrl = bool(mods & QtCore.Qt.ControlModifier)
+
+        probe = self._probe()
+        if key == QtCore.Qt.Key_Space:
+            if probe is not None and probe.is_engaged() and not ev.isAutoRepeat():
+                if probe.toggle_pinned():
+                    return True
+            return False
+
+        if key in (QtCore.Qt.Key_Z, QtCore.Qt.Key_P, QtCore.Qt.Key_A, QtCore.Qt.Key_S):
+            if probe is not None and probe.is_engaged() and not ev.isAutoRepeat():
+                key_map = {
+                    QtCore.Qt.Key_Z: "Z",
+                    QtCore.Qt.Key_P: "P",
+                    QtCore.Qt.Key_A: "A",
+                    QtCore.Qt.Key_S: "S",
+                }
+                self.owner._toggle_pg1_probe_key(key_map[key])
+                probe.refresh()
+                return True
+            return False
+
+        if key == QtCore.Qt.Key_Y:
+            if probe is not None and probe.is_engaged() and not ev.isAutoRepeat():
+                self.owner._toggle_zero_lines()
+                probe.refresh()
+                return True
+            return False
+
+        if key == QtCore.Qt.Key_G:
+            if probe is not None and probe.is_engaged() and not ev.isAutoRepeat():
+                self.owner._cycle_pg1_probe_grid()
+                probe.refresh()
+                return True
+            return False
+
+        if sel is None:
+            return False
+
+        if key == QtCore.Qt.Key_Left:
+            dx = sel._step2() if ctrl else sel._step(shift)
+            sel._nudge(-dx)
+            return True
+        if key == QtCore.Qt.Key_Right:
+            dx = sel._step2() if ctrl else sel._step(shift)
+            sel._nudge(dx)
+            return True
+        if key == QtCore.Qt.Key_Up:
+            sel._zoom(0.8)
+            return True
+        if key == QtCore.Qt.Key_Down:
+            sel._zoom(1.25)
+            return True
+        return False
+
+    def _handle_wheel(self, ev):
+        sel = self._selector()
+        if sel is None:
+            return False
+        dy = ev.angleDelta().y()
+        if dy > 0:
+            sel._zoom(0.8)
+            return True
+        if dy < 0:
+            sel._zoom(1.25)
+            return True
+        return False
+
+    def eventFilter(self, obj, ev):
+        try:
+            if self.plot is None:
+                return False
+            viewport = self.plot.viewport() if hasattr(self.plot, "viewport") else None
+        except RuntimeError:
+            return False
+        if obj not in {self.plot, viewport}:
+            return False
+        try:
+            has_focus = self.plot.hasFocus() or (viewport is not None and viewport.hasFocus())
+        except RuntimeError:
+            return False
+
+        if ev.type() == QtCore.QEvent.Wheel:
+            pos = ev.globalPosition().toPoint() if hasattr(ev, "globalPosition") else QtGui.QCursor.pos()
+            if self._in_plot(pos) and self._handle_wheel(ev):
+                ev.accept()
+                return True
+
+        if ev.type() == QtCore.QEvent.KeyPress and has_focus:
+            if self._handle_key(ev):
+                ev.accept()
+                return True
+
+        return False
 
 class XRangeSelector(QtCore.QObject):
     """

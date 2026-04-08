@@ -79,9 +79,7 @@ def _extract_traces(p, ns, annot_class, channels, pre_secs, post_secs, align_to,
     n_events = len(t_aligns)
 
     # ---- common grid ---------------------------------------------------
-    # Use a symmetric grid so the event lock always sits at visual x = 0.
-    span_secs = max(float(pre_secs), float(post_secs))
-    t_grid = np.linspace(-span_secs, span_secs, 400)
+    t_grid = np.linspace(-float(pre_secs), float(post_secs), 400)
 
     traces_out: dict[str, list] = {ch: [] for ch in channels}
     sr_out: dict[str, float]    = {}
@@ -165,7 +163,6 @@ def _extract_traces(p, ns, annot_class, channels, pre_secs, post_secs, align_to,
         "sr":       sr_out,
         "annot_class": annot_class,
         "channels": channels,
-        "span_secs": span_secs,
         }
 
 
@@ -337,20 +334,17 @@ class WaveformTab(_ExplorerTab):
         canvas = self._ensure_canvas()
         if canvas is None:
             return
-        if nrows is None or nrows <= 1:
-            canvas.setMinimumHeight(0)
-            canvas.setMaximumHeight(16777215)
-            if self._canvas_host is not None:
-                self._canvas_host.setMinimumHeight(0)
-                self._canvas_host.setMaximumHeight(16777215)
-            self._sync_canvas_width()
-            return
+        nrows = max(1, int(nrows or 1))
+        # Give every row ~260 px plus a fixed header budget; for a single row
+        # this provides a usable minimum so the canvas never collapses to zero.
+        # Multi-row canvases are fixed-height (scroll); single-row stretches to
+        # fill available space so it uses whatever the dock gives it.
         min_height = 120 + (nrows * 260) + ((nrows - 1) * 24)
         canvas.setMinimumHeight(min_height)
-        canvas.setMaximumHeight(min_height)
+        canvas.setMaximumHeight(min_height if nrows > 1 else 16777215)
         if self._canvas_host is not None:
             self._canvas_host.setMinimumHeight(min_height)
-            self._canvas_host.setMaximumHeight(min_height)
+            self._canvas_host.setMaximumHeight(min_height if nrows > 1 else 16777215)
         self._sync_canvas_width()
 
     # ------------------------------------------------------------------
@@ -505,7 +499,6 @@ class WaveformTab(_ExplorerTab):
         n_ev      = result["n_events"]
         ann_cls   = result["annot_class"]
         units     = result.get("units", {})
-        span_secs = float(result.get("span_secs", 0.0))
 
         chs_with_data = [ch for ch in channels if ch in mean_d]
         if not chs_with_data:
@@ -548,8 +541,8 @@ class WaveformTab(_ExplorerTab):
             # Event-onset line
             ax.axvline(0, color="#ffffff", lw=0.7, ls="--", alpha=0.55)
             ax.axhline(0, color=GRID, lw=0.4, alpha=0.7)
-            if span_secs > 0:
-                ax.set_xlim(-span_secs, span_secs)
+            if t_grid.size >= 2:
+                ax.set_xlim(float(t_grid[0]), float(t_grid[-1]))
 
             self._style_ax(ax, title=ch, ylabel=units.get(ch, ""))
             if y_min is not None or y_max is not None:

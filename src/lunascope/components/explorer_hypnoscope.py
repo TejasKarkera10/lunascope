@@ -123,10 +123,11 @@ def load_hypnoscope_cache(path: str) -> list:
 # Compilation (background)
 # ---------------------------------------------------------------------------
 
-def _compile_hypnoscope(proj, ids: list) -> dict:
+def _compile_hypnoscope(proj, ids: list, progress_cb=None) -> dict:
     """Load staging + EDF start-time for each subject. Thread-safe for one worker."""
     subjects = []
-    for id_str in ids:
+    total = len(ids)
+    for done, id_str in enumerate(ids):
         try:
             p = proj.inst(id_str)
         except Exception as e:
@@ -145,6 +146,13 @@ def _compile_hypnoscope(proj, ids: list) -> dict:
                     start_tod = (int(parts[0]) * 3600
                                  + int(parts[1]) * 60
                                  + int(parts[2]))
+                    # Sleep recordings start in the evening and may cross midnight.
+                    # A raw clock time before noon means the recording started
+                    # after midnight (i.e. next calendar day) — add 24 h so it
+                    # plots to the right of the evening-start cluster rather than
+                    # ~18–24 h to its left.
+                    if start_tod < 43200:   # before noon → treat as next-day
+                        start_tod += 86400
         except Exception:
             pass
 
@@ -220,6 +228,8 @@ def _compile_hypnoscope(proj, ids: list) -> dict:
             "tst_epochs":       sleep_eps,
             "sleep_efficiency": eff,
         })
+        if progress_cb is not None:
+            progress_cb(done + 1, total)
 
     return {"subjects": subjects}
 
@@ -231,8 +241,9 @@ def _compile_hypnoscope(proj, ids: list) -> dict:
 class HypnoscopeTab(_ExplorerTab):
     """Hypnoscope tab: cohort-level hypnogram visualisation."""
 
-    _sig_ok  = QtCore.Signal(object)
-    _sig_err = QtCore.Signal(str)
+    _sig_ok       = QtCore.Signal(object)
+    _sig_err      = QtCore.Signal(str)
+    _sig_progress = QtCore.Signal(int, int)   # (done, total)
 
     _ALIGN_OPTS = [
         ("clock",   "Clock time"),
@@ -250,8 +261,9 @@ class HypnoscopeTab(_ExplorerTab):
     def __init__(self, ctrl, parent=None):
         super().__init__(ctrl, parent)
         self._data: list | None = None   # list of subject dicts
-        self._sig_ok.connect(self._on_ok,  Qt.QueuedConnection)
-        self._sig_err.connect(self._on_err, Qt.QueuedConnection)
+        self._sig_ok.connect(self._on_ok,        Qt.QueuedConnection)
+        self._sig_err.connect(self._on_err,       Qt.QueuedConnection)
+        self._sig_progress.connect(self._on_progress, Qt.QueuedConnection)
         self._build_widget()
 
     # ------------------------------------------------------------------
@@ -338,10 +350,22 @@ class HypnoscopeTab(_ExplorerTab):
             QtWidgets.QMessageBox.warning(self._root, "Hypnoscope",
                                           "No subjects in the sample list.")
             return
-        if not self._start_work(f"Compiling staging from {len(ids)} subjects…"):
+        n = len(ids)
+        if not self._start_work(f"Compiling staging from {n} subjects…"):
             return
+        self._render_empty(
+            f"Compiling staging data from {n} subjects…\n\nPlease wait.\n\n"
+            "Tip: use  Save cache…  after compiling\n"
+            "to speed up future loads."
+        )
+        self._lbl_status.setStyleSheet("color:#888;")
+        self._lbl_status.setText(f"Compiling…  0 / {n}")
         self._saved_id = self._get_current_id()
-        fut = self.ctrl._exec.submit(_compile_hypnoscope, self.ctrl.proj, ids)
+
+        def _progress_cb(done, total):
+            self._sig_progress.emit(done, total)
+
+        fut = self.ctrl._exec.submit(_compile_hypnoscope, self.ctrl.proj, ids, _progress_cb)
         def _done(_f=fut):
             try:
                 self._sig_ok.emit(_f.result())
@@ -401,6 +425,10 @@ class HypnoscopeTab(_ExplorerTab):
             self._rerender()
         finally:
             self._end_work()
+
+    def _on_progress(self, done, total):
+        self._lbl_status.setStyleSheet("color:#888;")
+        self._lbl_status.setText(f"Compiling…  {done} / {total}")
 
     def _on_err(self, tb_str):
         try:
