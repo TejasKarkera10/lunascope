@@ -463,7 +463,7 @@ class SignalsMixin:
                     df1 = self.p.table( 'EPOCH' , 'E' )
                     df1 = df1[ ['E' , 'START' , 'STOP' ] ]
                 else:
-                    df1 = pd.DataFrame( columns = [ "E", "OSTAGE" ] )
+                    df1 = pd.DataFrame( columns = [ "E", "START", "STOP" ] )
 
                 # if no valid staging, will not have any 'STAGE' output
                 tbls = self.p.strata()
@@ -480,6 +480,21 @@ class SignalsMixin:
                 df = pd.merge(df1, df2, on="E", how="inner")
 
         df = self._filter_navigator_stage_df(df, 'OSTAGE')
+
+        # Always draw from stg_evts (fetch_annots clocktime positions) — the same
+        # source _render_hypnogram uses — so bars are never in a different coordinate
+        # space.  For MASK-without-RE, EPOCH START values are in the same clocktime
+        # space, so we can filter stg_evts to active epochs by matching positions.
+        # For MASK+RE, EPOCH START values are restructured (0, 30, 60 …) and won't
+        # match stg_evts; in that case RE has already removed inactive epochs so
+        # stg_evts contains exactly the active set — use it as-is.
+        if len(stg_evts) > 0:
+            active = stg_evts[stg_evts['Start'].isin(df['START'])] if len(df) > 0 else stg_evts.iloc[0:0]
+            if len(active) == 0:
+                active = stg_evts  # post-RE: all remaining stg_evts entries are active
+            df = active[['Start', 'Stop', 'Class']].copy()
+            df.rename(columns={'Start': 'START', 'Stop': 'STOP', 'Class': 'OSTAGE'}, inplace=True)
+            df = self._filter_navigator_stage_df(df, 'OSTAGE')
 
         if len( df ) != 0:
             starts = df[ 'START' ].to_numpy()

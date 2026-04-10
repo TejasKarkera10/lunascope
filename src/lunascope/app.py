@@ -2,6 +2,9 @@ import sys
 from pathlib import Path
 import os
 import signal
+import traceback
+import threading
+import faulthandler
 
 from .runtime_paths import app_cache_root
 
@@ -11,6 +14,21 @@ def _boot_log(message: str) -> None:
 
 
 _boot_log("Initiating startup...")
+
+
+def _diagnostics_log_path() -> Path:
+    return app_cache_root() / "lunascope-diagnostics.log"
+
+
+def _append_diagnostics_log(message: str) -> None:
+    line = f"[lunascope] {message}\n"
+    try:
+        with _diagnostics_log_path().open("a", encoding="utf-8") as fh:
+            fh.write(line)
+    except OSError:
+        pass
+    sys.stderr.write(line)
+    sys.stderr.flush()
 
 
 def _configure_runtime_cache_dirs() -> None:
@@ -154,6 +172,51 @@ def _install_signal_handlers(app: QApplication, controller=None) -> None:
     app._signal_heartbeat = heartbeat
 
 
+def _install_diagnostics(app: QApplication, ui=None) -> None:
+    try:
+        _diagnostics_log_path().parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    try:
+        fh = _diagnostics_log_path().open("a", encoding="utf-8")
+    except OSError:
+        fh = None
+
+    if fh is not None:
+        try:
+            faulthandler.enable(file=fh, all_threads=True)
+            app._faulthandler_log = fh
+            _append_diagnostics_log(f"Faulthandler enabled: {_diagnostics_log_path()}")
+        except Exception as exc:
+            fh.close()
+            _append_diagnostics_log(f"Failed to enable faulthandler: {type(exc).__name__}: {exc}")
+
+    def _log_exception(kind: str, exc_type, exc_value, exc_tb) -> None:
+        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb)).strip()
+        _append_diagnostics_log(f"{kind}:\n{text}")
+
+    def _sys_excepthook(exc_type, exc_value, exc_tb):
+        _log_exception("Unhandled exception", exc_type, exc_value, exc_tb)
+
+    def _threading_excepthook(args):
+        _log_exception(
+            f"Unhandled thread exception in {getattr(args.thread, 'name', '<unknown>')}",
+            args.exc_type,
+            args.exc_value,
+            args.exc_traceback,
+        )
+
+    sys.excepthook = _sys_excepthook
+    if hasattr(threading, "excepthook"):
+        threading.excepthook = _threading_excepthook
+
+    app.aboutToQuit.connect(lambda: _append_diagnostics_log("QApplication.aboutToQuit emitted"))
+    app.lastWindowClosed.connect(lambda: _append_diagnostics_log("QApplication.lastWindowClosed emitted"))
+    if ui is not None:
+        ui.destroyed.connect(lambda *_: _append_diagnostics_log("Main window destroyed"))
+
+
 
 def main(argv=None) -> int:
 
@@ -173,6 +236,7 @@ def main(argv=None) -> int:
     
     _boot_log("Loading user interface...")
     ui = _load_ui()
+    _install_diagnostics(app, ui)
     controller = Controller(ui, proj)
     _install_signal_handlers(app, controller)
 
@@ -230,10 +294,11 @@ def main(argv=None) -> int:
     _boot_log("Startup complete.")
 
     try:
-        return app.exec()
+        rc = app.exec()
+        _append_diagnostics_log(f"app.exec() returned rc={rc}")
+        return rc
     except Exception:
-        import traceback
-        traceback.print_exc()
+        _append_diagnostics_log("Exception escaped app.exec():\n" + traceback.format_exc().strip())
         return 1
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lunascope"
-version = "0.9.9"
+version = "0.9.9b"
 description = "Sleep-EEG viewer and interface to Luna"
 readme = "README.md"
 requires-python = ">=3.9, <3.15"
@@ -18,12 +18,13 @@ authors = [
   {name = "Nataliia Kozhemiako", email = "nkozhemiako@bwh.harvard.edu"} ]
 
 dependencies = [
- "lunapi>=1.4.7",
- "PySide6>=6.10.0",  
- "pyqtgraph==0.13.7",
- "numpy",
- "pandas",
- "matplotlib"
+  "lunapi>=1.4.9,<1.5",
+  "PySide6>=6.10,<6.11",
+  "pyqtgraph>=0.13.7,<0.14",
+  "numpy>=2.0,<3",
+  "pandas>=2.2,<3",
+  "matplotlib>=3.8,<4",
+  "psutil>=5.9"
 ]
 
 [project.scripts]
