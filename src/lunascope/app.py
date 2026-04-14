@@ -88,12 +88,194 @@ import pyqtgraph as pg
 from PySide6.QtCore import QFile, QTimer
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QPalette, QColor
 from importlib.resources import files, as_file
 
 from .controller import Controller
 
 # suppress macOS warnings
 os.environ["OS_ACTIVITY_MODE"] = "disable"
+
+
+def _apply_forced_dark_theme(app: QApplication) -> None:
+    """Apply a platform-independent dark theme using built-in Qt styling."""
+    app.setStyle("Fusion")
+
+    pal = QPalette()
+    pal.setColor(QPalette.Window, QColor("#242628"))
+    pal.setColor(QPalette.WindowText, QColor("#E7EAEE"))
+    pal.setColor(QPalette.Base, QColor("#17191C"))
+    pal.setColor(QPalette.AlternateBase, QColor("#202328"))
+    pal.setColor(QPalette.ToolTipBase, QColor("#1D2024"))
+    pal.setColor(QPalette.ToolTipText, QColor("#E7EAEE"))
+    pal.setColor(QPalette.Text, QColor("#E7EAEE"))
+    pal.setColor(QPalette.Button, QColor("#2B2E33"))
+    pal.setColor(QPalette.ButtonText, QColor("#E7EAEE"))
+    pal.setColor(QPalette.BrightText, QColor("#FFFFFF"))
+    pal.setColor(QPalette.Link, QColor("#7DB7FF"))
+    pal.setColor(QPalette.Highlight, QColor("#2F6DB2"))
+    pal.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
+    pal.setColor(QPalette.PlaceholderText, QColor("#8F98A3"))
+    pal.setColor(QPalette.Light, QColor("#3A3E44"))
+    pal.setColor(QPalette.Midlight, QColor("#31353A"))
+    pal.setColor(QPalette.Mid, QColor("#44484F"))
+    pal.setColor(QPalette.Dark, QColor("#111315"))
+    pal.setColor(QPalette.Shadow, QColor("#080909"))
+
+    disabled_roles = (
+        QPalette.WindowText,
+        QPalette.Text,
+        QPalette.ButtonText,
+        QPalette.HighlightedText,
+    )
+    for role in disabled_roles:
+        pal.setColor(QPalette.Disabled, role, QColor("#7B838C"))
+    pal.setColor(QPalette.Disabled, QPalette.Base, QColor("#141619"))
+    pal.setColor(QPalette.Disabled, QPalette.Button, QColor("#23262A"))
+    pal.setColor(QPalette.Disabled, QPalette.Highlight, QColor("#3A4149"))
+
+    app.setPalette(pal)
+
+    app.setStyleSheet(
+        """
+        QWidget {
+            color: #E7EAEE;
+            background-color: #242628;
+        }
+        QMainWindow, QDialog, QFrame, QSplitter, QStatusBar, QMenuBar, QMenu, QToolTip {
+            background-color: #242628;
+            color: #E7EAEE;
+        }
+        QStatusBar::item {
+            border: none;
+        }
+        QMenuBar::item:selected, QMenu::item:selected {
+            background: #2F6DB2;
+            color: #FFFFFF;
+        }
+        QDockWidget {
+            color: #E7EAEE;
+        }
+        QDockWidget::title {
+            background: #2C2F34;
+            color: #D7DCE2;
+            border: 1px solid #3A3E44;
+            padding: 4px 8px;
+        }
+        QTabWidget::pane, QGroupBox, QAbstractScrollArea, QListView, QTreeView, QTableView {
+            border: 1px solid #3A3E44;
+            background: #17191C;
+        }
+        QGroupBox {
+            margin-top: 0.7em;
+            padding-top: 0.5em;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 8px;
+            padding: 0 4px;
+            color: #C4CBD4;
+        }
+        QHeaderView::section {
+            background: #2B2E33;
+            color: #D7DCE2;
+            border: 1px solid #3A3E44;
+            padding: 2px 4px;
+        }
+        QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit, QTextEdit {
+            background: #2B2E33;
+            color: #E7EAEE;
+            border: 1px solid #4A4F56;
+            border-radius: 4px;
+            selection-background-color: #2F6DB2;
+            selection-color: #FFFFFF;
+        }
+        QPushButton:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover {
+            border: 1px solid #6588B3;
+        }
+        QPushButton:pressed {
+            background: #23262B;
+        }
+        QPushButton:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QLineEdit:disabled {
+            background: #23262A;
+            color: #7B838C;
+            border: 1px solid #32363C;
+        }
+        QLineEdit[readOnly="true"], QPlainTextEdit[readOnly="true"], QTextEdit[readOnly="true"] {
+            background: #1D2024;
+        }
+        QTabBar::tab {
+            background: #2A2D31;
+            color: #C9D0D8;
+            border: 1px solid #3A3E44;
+            padding: 4px 8px;
+        }
+        QTabBar::tab:selected {
+            background: #2F6DB2;
+            color: #FFFFFF;
+        }
+        QTabBar::tab:!selected:hover {
+            background: #343940;
+        }
+        QCheckBox, QRadioButton, QLabel {
+            color: #E7EAEE;
+        }
+        QCheckBox::indicator, QRadioButton::indicator {
+            width: 15px;
+            height: 15px;
+            background: #1A1D21;
+            border: 1px solid #747C86;
+        }
+        QCheckBox::indicator {
+            border-radius: 3px;
+        }
+        QRadioButton::indicator {
+            border-radius: 8px;
+        }
+        QCheckBox::indicator:hover, QRadioButton::indicator:hover {
+            border: 1px solid #A6AFBA;
+        }
+        QCheckBox::indicator:checked {
+            background: #2F6DB2;
+            border: 1px solid #C9D4E2;
+        }
+        QRadioButton::indicator:checked {
+            background: #2F6DB2;
+            border: 1px solid #C9D4E2;
+        }
+        QTableView::indicator, QListView::indicator, QTreeView::indicator {
+            width: 15px;
+            height: 15px;
+            background: #1A1D21;
+            border: 1px solid #747C86;
+        }
+        QTableView::indicator:hover, QListView::indicator:hover, QTreeView::indicator:hover {
+            border: 1px solid #A6AFBA;
+        }
+        QTableView::indicator:checked, QListView::indicator:checked, QTreeView::indicator:checked {
+            background: #2F6DB2;
+            border: 1px solid #C9D4E2;
+        }
+        QScrollBar:vertical, QScrollBar:horizontal {
+            background: #1D2024;
+            border: none;
+            margin: 0;
+        }
+        QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+            background: #4A4F56;
+            border-radius: 4px;
+            min-height: 18px;
+            min-width: 18px;
+        }
+        QScrollBar::handle:hover:vertical, QScrollBar::handle:hover:horizontal {
+            background: #5A6068;
+        }
+        QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {
+            background: none;
+            border: none;
+        }
+        """
+    )
 
 
 def _load_ui():
@@ -228,6 +410,7 @@ def main(argv=None) -> int:
     args = _parse_args(argv or sys.argv[1:])
     _boot_log("Creating application...")
     app = QApplication(sys.argv)
+    _apply_forced_dark_theme(app)
 
     # initiate silent luna
     _boot_log("Initializing Luna...")

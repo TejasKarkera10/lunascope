@@ -753,9 +753,9 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
             if self.current:
                 self.ui.butt_render.setStyleSheet("background-color: #2E8B57; color: #FFFFFF;")
             else:
-                self.ui.butt_render.setStyleSheet("background-color: #FFC107; color: #5C0000;")
+                self.ui.butt_render.setStyleSheet("background-color: #C28B16; color: #1A1100;")
         else:
-            self.ui.butt_render.setStyleSheet("background-color: #F8F8F8; color: #8B0000;")
+            self.ui.butt_render.setStyleSheet("background-color: #5C232A; color: #FFD8DC;")
 
         # set empiric false to allow fixed scale in un-rendered
         self.ui.radio_empiric.setChecked( self.rendered )
