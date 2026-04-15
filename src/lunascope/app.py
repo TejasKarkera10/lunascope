@@ -92,6 +92,7 @@ from PySide6.QtGui import QPalette, QColor
 from importlib.resources import files, as_file
 
 from .controller import Controller
+from .helpers import SmallPlaceholderEdit
 
 # suppress macOS warnings
 os.environ["OS_ACTIVITY_MODE"] = "disable"
@@ -308,6 +309,7 @@ def _load_ui():
         try:
             loader = QUiLoader()
             loader.registerCustomWidget(pg.PlotWidget)
+            loader.registerCustomWidget(SmallPlaceholderEdit)
             ui = loader.load(f)
         finally:
             f.close()

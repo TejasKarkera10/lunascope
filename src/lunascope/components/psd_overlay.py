@@ -346,12 +346,13 @@ class PSDOverlayMixin:
         row2.setSpacing(3)
 
         # Toggle button — compact label
-        self._psd_toggle_btn = QPushButton("On", bar)
+        self._psd_toggle_btn = QPushButton(bar)
         self._psd_toggle_btn.setCheckable(True)
         self._psd_toggle_btn.setChecked(False)
-        self._psd_toggle_btn.setFixedWidth(26)
+        self._psd_toggle_btn.setFixedWidth(34)
         self._psd_toggle_btn.setToolTip("Toggle on-the-fly PSD inset")
         self._psd_toggle_btn.toggled.connect(self._psd_on_toggle)
+        self._psd_sync_toggle_label(False)
 
         # Frequency range
         f_lbl = QLabel("f:", bar)
@@ -419,8 +420,14 @@ class PSDOverlayMixin:
     # Toggle / close / settings
     # ------------------------------------------------------------------
 
+    def _psd_sync_toggle_label(self, checked: bool | None = None):
+        if checked is None:
+            checked = bool(self._psd_toggle_btn.isChecked())
+        self._psd_toggle_btn.setText("On" if checked else "Off")
+
     def _psd_on_toggle(self, checked: bool):
         self._psd_visible = checked
+        self._psd_sync_toggle_label(checked)
         # Render mode uses segsrv-backed PSD. Non-render mode computes PSD
         # directly from the cached visible traces and does not need backend prep.
         if getattr(self, "rendered", False):

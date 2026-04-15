@@ -250,21 +250,30 @@ class MetricsMixin:
         # ------------------------------------------------------------
         # EDF header metrics --> status bar
         
-        self.p.silent_proc( 'HEADERS & EPOCH align' )
-
-        df = self.p.table( 'EPOCH' )
+        self.p.silent_proc( 'EPOCH' )
+        df_raw = self.p.table( 'EPOCH' )
         try:
-            edf_ne = df.iloc[0, df.columns.get_loc('NE')]
+            edf_ne_raw = int( df_raw.iloc[0, df_raw.columns.get_loc('NE')] )
         except KeyError:
             QMessageBox.critical(self.ui, "Problem", "Likely no unmasked epochs left\nGoing to refresh the EDF" )
             self._refresh()
-            return        
-        
+            return
+
+        self.p.silent_proc( 'HEADERS & EPOCH align' )
+        df_align = self.p.table( 'EPOCH' )
+        edf_ne_align = int( df_align.iloc[0, df_align.columns.get_loc('NE')] ) \
+            if 'NE' in df_align.columns else 0
+
+        if edf_ne_align == edf_ne_raw:
+            epoch_str = str( edf_ne_raw )
+        else:
+            epoch_str = f"{edf_ne_raw}({edf_ne_align})"
+
         df = self.p.table( 'HEADERS' )
         edf_id = self.p.id()
         rec_dur_hms = df.iloc[0, df.columns.get_loc('REC_DUR_HMS')]
         tot_dur_hms = df.iloc[0, df.columns.get_loc('TOT_DUR_HMS')]
-        edf_type = df.iloc[0, df.columns.get_loc('EDF_TYPE')]        
+        edf_type = df.iloc[0, df.columns.get_loc('EDF_TYPE')]
         edf_na = self.p.annots().size
         edf_ns = df.iloc[0, df.columns.get_loc('NS')]
         edf_starttime = df.iloc[0, df.columns.get_loc('START_TIME')]
@@ -273,7 +282,7 @@ class MetricsMixin:
 
         self.sb_id.setText( f"{edf_type}: {edf_id}" )
         self.sb_start.setText( f"Start time: {edf_starttime} date: {edf_startdate}" )
-        self.sb_dur.setText( f"Duration: {rec_dur_hms} / {tot_dur_hms} / {edf_ne} epochs" )
+        self.sb_dur.setText( f"Duration: {rec_dur_hms} / {tot_dur_hms} / {epoch_str} epochs" )
         self.sb_ns.setText( f"{edf_ns} signals, {edf_na} annotations" )
 
         

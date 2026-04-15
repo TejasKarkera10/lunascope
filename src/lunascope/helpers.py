@@ -34,13 +34,62 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QColorDialog, QLabel, QApplication
 )
 
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPainter, QFont
+from PySide6.QtWidgets import QPlainTextEdit
+from PySide6.QtGui import QPalette
 import sys
 import random, colorsys
 import pyqtgraph as pg
 import pandas as pd
 import numpy as np
 
+
+# ------------------------------------------------------------
+#
+# QPlainTextEdit that renders placeholder text at a reduced,
+# non-bold font size so it doesn't overpower the widget.
+#
+# ------------------------------------------------------------
+
+class SmallPlaceholderEdit(QPlainTextEdit):
+    """QPlainTextEdit whose placeholder text is drawn at ~75 % of the
+    widget font size and without bold, so it reads clearly as a hint
+    rather than as actual content."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._suppress_placeholder = False
+
+    def paintEvent(self, event):
+        ph = self.placeholderText()
+        if ph and not self.toPlainText() and not self._suppress_placeholder:
+            # Temporarily hide the built-in placeholder so Qt does not draw it
+            self._suppress_placeholder = True
+            try:
+                self.setPlaceholderText("")
+                super().paintEvent(event)
+            finally:
+                self.setPlaceholderText(ph)
+                self._suppress_placeholder = False
+
+            # Draw our own smaller, non-bold placeholder on the viewport
+            vp = self.viewport()
+            painter = QPainter(vp)
+            font = QFont(self.font())
+            pt = font.pointSizeF()
+            font.setPointSizeF(max(7.0, pt * 0.75))
+            font.setBold(False)
+            painter.setFont(font)
+            color = self.palette().color(QPalette.PlaceholderText)
+            painter.setPen(color)
+            margin = int(self.document().documentMargin())
+            ox = max(0, int(self.contentOffset().x()) + margin)
+            oy = max(0, int(self.contentOffset().y()) + margin)
+            rect = vp.rect().adjusted(ox, oy, -margin, -margin)
+            painter.drawText(rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, ph)
+            painter.end()
+        else:
+            super().paintEvent(event)
 
 
 # ------------------------------------------------------------
@@ -351,20 +400,28 @@ class Blocker(QWidget):
     Safe on shutdown (no 'C++ object already deleted' errors).
     """
 
-    def __init__(self, parent, message="Working…", alpha=180):
+    def __init__(self, parent, message="Working…", alpha=180, manage_peers=True):
         super().__init__(parent)
         self._parent_ref = weakref.ref(parent)
         self._dead = False
         self._alpha = int(alpha)
+        self._manage_peers = bool(manage_peers)
+        self._peer_blockers = {}
 
         # window + event setup
         self.setWindowFlags(Qt.Widget | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.setObjectName("_busy_blocker")
 
         # label
         self.label = QLabel(message, self)
         self.label.setAlignment(Qt.AlignCenter)
-        self.label.setStyleSheet("color: white; font-size: 22px;")
+        self.label.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.label.setAutoFillBackground(False)
+        self.label.setStyleSheet(
+            "QLabel { color: white; font-size: 22px; background: transparent; "
+            "background-color: transparent; border: none; }"
+        )
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -384,7 +441,10 @@ class Blocker(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(0, 0, 0, self._alpha))
+        alpha = self._alpha
+        if is_dark_palette():
+            alpha = max(alpha, 170)
+        p.fillRect(self.rect(), QColor(28, 28, 32, alpha))
 
     def eventFilter(self, obj, ev):
         if self._dead:
@@ -408,14 +468,77 @@ class Blocker(QWidget):
             self.setGeometry(parent.rect())
         self.show()
         self.raise_()
+        if self._manage_peers:
+            self._sync_peer_blockers()
 
     def hide_block(self):
         self.hide()
+        self._clear_peer_blockers()
 
     def _on_parent_destroyed(self):
         self._dead = True
+        self._clear_peer_blockers()
         self.hide()
         self.deleteLater()
+
+    def _iter_peer_targets(self):
+        parent = self._parent_ref()
+        if not parent:
+            return
+
+        seen = {id(parent)}
+        for dock in parent.findChildren(QDockWidget):
+            if (
+                dock is not self
+                and dock.isVisible()
+                and dock.isWindow()
+                and id(dock) not in seen
+            ):
+                seen.add(id(dock))
+                yield dock
+
+        for widget in QApplication.topLevelWidgets():
+            if (
+                widget is self
+                or widget is parent
+                or isinstance(widget, Blocker)
+                or not widget.isVisible()
+                or not widget.isWindow()
+                or widget.parentWidget() is not parent
+                or id(widget) in seen
+            ):
+                continue
+            seen.add(id(widget))
+            yield widget
+
+    def _sync_peer_blockers(self):
+        msg = self.label.text()
+        parent = self._parent_ref()
+        if not parent:
+            self._clear_peer_blockers()
+            return
+
+        active = set()
+        for widget in self._iter_peer_targets():
+            key = id(widget)
+            active.add(key)
+            peer = self._peer_blockers.get(key)
+            if peer is None:
+                peer = Blocker(widget, msg, alpha=self._alpha, manage_peers=False)
+                self._peer_blockers[key] = peer
+            peer.show_block(msg, self._alpha)
+
+        for key in list(self._peer_blockers):
+            if key not in active:
+                peer = self._peer_blockers.pop(key)
+                peer.hide_block()
+                peer.deleteLater()
+
+    def _clear_peer_blockers(self):
+        for peer in self._peer_blockers.values():
+            peer.hide_block()
+            peer.deleteLater()
+        self._peer_blockers.clear()
 
 
 # ------------------------------------------------------------

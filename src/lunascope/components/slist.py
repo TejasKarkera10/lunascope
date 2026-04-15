@@ -260,6 +260,66 @@ class SampleListCompactDelegate(QStyledItemDelegate):
 
 class SListMixin:
 
+    def _annotation_paths_from_cell(self, value):
+        text = str(value or "").strip()
+        if text in ("", "."):
+            return []
+        if text.startswith("{") and text.endswith("}"):
+            text = text[1:-1]
+        return [p.strip() for p in text.split(",") if p.strip() and p.strip() != "."]
+
+    def _current_slist_source_row(self):
+        view = self.ui.tbl_slist
+        idx = view.currentIndex()
+        if not idx.isValid():
+            sel = view.selectionModel()
+            if sel and sel.currentIndex().isValid():
+                idx = sel.currentIndex()
+        if not idx.isValid():
+            return -1
+
+        model = view.model()
+        if hasattr(model, "mapToSource"):
+            idx = model.mapToSource(idx)
+        return idx.row()
+
+    def _sample_rows_from_source_model(self):
+        model = getattr(self, "_proxy", None)
+        if model is not None and hasattr(model, "sourceModel"):
+            model = model.sourceModel()
+        else:
+            model = self.ui.tbl_slist.model()
+            if hasattr(model, "sourceModel"):
+                model = model.sourceModel()
+
+        if model is None:
+            return []
+
+        rows = []
+        for r in range(model.rowCount()):
+            row = []
+            for c in range(3):
+                idx = model.index(r, c)
+                row.append(str(model.data(idx, Qt.DisplayRole) or ""))
+            row[2] = ",".join(self._annotation_paths_from_cell(row[2])) or "."
+            rows.append(row)
+        return rows
+
+    def _replace_sample_rows(self, rows, selected_source_row=0):
+        self.proj.eng.set_sample_list(rows)
+        df = self.proj.sample_list()
+        model = self.df_to_model(df)
+        self._proxy.setSourceModel(model)
+        self._configure_slist_view()
+
+        selected_source_row = max(0, min(selected_source_row, model.rowCount() - 1)) if model.rowCount() else -1
+        if selected_source_row >= 0:
+            src_idx = model.index(selected_source_row, 0)
+            proxy_idx = self._proxy.mapFromSource(src_idx)
+            if proxy_idx.isValid():
+                self.ui.tbl_slist.setCurrentIndex(proxy_idx)
+                self.ui.tbl_slist.selectRow(proxy_idx.row())
+
     def _find_matching_annotation_file(self, edf_file: str):
         exts = [".annot", ".xml", ".eannot", ".tsv"]
         p = Path(edf_file)
@@ -526,20 +586,23 @@ class SListMixin:
             # If called interactively and an instance is already attached,
             # offer to append rather than replace.
             if interactive and hasattr(self, "p"):
-                ans = QMessageBox.question(
-                    self.ui,
-                    "Append or Replace?",
-                    f"An EDF/annotation is already loaded.\n\n"
-                    f"Append this annotation to the current instance, "
-                    f"or replace the current instance?\n\n"
-                    f"{annot_file}",
-                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                    QMessageBox.Yes,
+                box = QMessageBox(self.ui)
+                box.setWindowTitle("Load Annotations")
+                box.setText("An EDF/annotation is already loaded.")
+                box.setInformativeText(
+                    "Add this annotation file to the current EDF, or load the "
+                    f"annotation file by itself?\n\n{annot_file}"
                 )
-                # Yes = Append, No = Replace, Cancel = abort
-                if ans == QMessageBox.Cancel:
+                add_button = box.addButton("Add to EDF", QMessageBox.AcceptRole)
+                load_only_button = box.addButton("Load annotations only", QMessageBox.ActionRole)
+                cancel_button = box.addButton(QMessageBox.Cancel)
+                box.setDefaultButton(add_button)
+                box.exec()
+
+                clicked = box.clickedButton()
+                if clicked == cancel_button:
                     return
-                if ans == QMessageBox.Yes:
+                if clicked == add_button:
                     try:
                         self.p.attach_annot(annot_file)
                     except Exception as e:
@@ -549,10 +612,23 @@ class SListMixin:
                             f"Could not append annotation:\n{e}",
                         )
                         return
+
+                    rows = self._sample_rows_from_source_model()
+                    selected_row = self._current_slist_source_row()
+                    if 0 <= selected_row < len(rows):
+                        annots = self._annotation_paths_from_cell(rows[selected_row][2])
+                        if annot_file not in annots:
+                            annots.append(annot_file)
+                        rows[selected_row][2] = ",".join(annots) or "."
+                        self._replace_sample_rows(rows, selected_row)
+                        self.ui.lbl_slist.setText("<internal>")
+
                     # Refresh annotation-related displays
                     self._update_metrics()
                     self._render_hypnogram()
                     self._render_signals_simple()
+                    return
+                if clicked != load_only_button:
                     return
 
             base = path.splitext(path.basename(annot_file))[0]

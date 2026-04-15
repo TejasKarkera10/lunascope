@@ -805,7 +805,13 @@ class SignalsMixin:
         else:
             try:
                 res = self.p.silent_proc( 'EPOCH align verbose & STAGE' )
-            except RuntimeError:
+                # EPOCH align returns NE=0 when staging offsets can't align to the
+                # epoch grid (e.g. after MASK+RE produces a discontinuous EDF).
+                # Treat this the same as a failed STAGE call.
+                df_ne = self.p.table( 'EPOCH' )
+                if 'NE' not in df_ne.columns or int( df_ne.iloc[0, df_ne.columns.get_loc('NE')] ) == 0:
+                    raise RuntimeError( "EPOCH align returned 0 epochs" )
+            except (RuntimeError, KeyError):
                 if len(stg_evts) != 0:
                     # Fallback: if STAGE fails, still render available annotations.
                     df = stg_evts[['Start', 'Stop', 'Class']].copy()

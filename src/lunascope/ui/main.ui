@@ -548,7 +548,7 @@
            </widget>
           </item>
           <item>
-           <widget class="QPlainTextEdit" name="txt_inp">
+           <widget class="SmallPlaceholderEdit" name="txt_inp">
             <property name="palette">
              <palette>
               <active>
@@ -1207,7 +1207,7 @@
              <number>0</number>
             </property>
             <item>
-             <widget class="QPlainTextEdit" name="txt_param">
+             <widget class="SmallPlaceholderEdit" name="txt_param">
               <property name="font">
                <font>
                 <family>Courier New</family>
@@ -2591,6 +2591,11 @@
    <extends>QWidget</extends>
    <header>pyqtgraph</header>
    <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>SmallPlaceholderEdit</class>
+   <extends>QPlainTextEdit</extends>
+   <header>lunascope.helpers</header>
   </customwidget>
  </customwidgets>
  <resources/>
