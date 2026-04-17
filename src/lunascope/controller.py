@@ -38,6 +38,7 @@ from PySide6.QtWidgets import QFileDialog
 from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
 from PySide6.QtGui import QKeySequence, QGuiApplication
 from .file_dialogs import open_file_name, save_file_name
+from . import updater as _updater
 
 import pyqtgraph as pg
 
@@ -217,8 +218,10 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
 
         # set up menu: about
         act_about = QAction("Help", self)
+        act_about.triggered.connect(self.show_about)
 
-        act_about.triggered.connect( self.show_about )
+        act_check_update = QAction("Check for Updates…", self)
+        act_check_update.triggered.connect(self._check_for_updates)
         
         # palette menu
         act_pal_spectrum = QAction("Spectrum", self)
@@ -272,7 +275,9 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         self.ui.menuPalettes.addAction(act_pal_bespoke)
         
         # about menu
-        self.ui.menuAbout.addAction(act_about)   
+        self.ui.menuAbout.addAction(act_about)
+        self.ui.menuAbout.addSeparator()
+        self.ui.menuAbout.addAction(act_check_update)
 
         # window title
         self.ui.setWindowTitle(f"Lunascope v{__version__}")
@@ -806,6 +811,9 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
             lbl.setOpenExternalLinks(True)
 
         box.exec()
+
+    def _check_for_updates(self):
+        _updater.check_and_prompt(__version__, parent=self.ui)
 
     def _save_session_state(self):
         filename, _ = save_file_name(
