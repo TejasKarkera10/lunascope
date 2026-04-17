@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 _PYPI_URL = "https://pypi.org/pypi/lunascope/json"
+_LOCAL_TEST_INDEX = None  # set to a local dir path for offline testing
 
 
 class _VersionCheckWorker(QThread):
@@ -52,7 +53,18 @@ def _ssl_context():
 
 
 def _fetch_latest_version() -> str:
-    """Return the latest lunascope version string from PyPI, or raise."""
+    """Return the latest lunascope version string from PyPI (or local test index), or raise."""
+    if _LOCAL_TEST_INDEX:
+        import glob, os, re
+        wheels = glob.glob(os.path.join(_LOCAL_TEST_INDEX, "lunascope-*.whl"))
+        versions = []
+        for w in wheels:
+            m = re.search(r"lunascope-(\d+\.\d+\.\d+)", os.path.basename(w))
+            if m:
+                versions.append(m.group(1))
+        if not versions:
+            raise RuntimeError("No wheels found in local test index")
+        return max(versions, key=lambda v: tuple(int(x) for x in v.split(".")))
     req = urllib.request.Request(_PYPI_URL, headers={"User-Agent": "lunascope-updater"})
     with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as resp:
         data = json.loads(resp.read().decode())
@@ -65,8 +77,13 @@ class _PipWorker(QThread):
 
     def run(self):
         try:
+            if _LOCAL_TEST_INDEX:
+                cmd = [sys.executable, "-m", "pip", "install", "--upgrade",
+                       "--find-links", _LOCAL_TEST_INDEX, "--no-index", "lunascope"]
+            else:
+                cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "lunascope"]
             proc = subprocess.Popen(
-                [sys.executable, "-m", "pip", "install", "--upgrade", "lunascope"],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
