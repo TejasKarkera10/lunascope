@@ -2,9 +2,13 @@ name: Smoke Test App (PyInstaller)
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Build App (PyInstaller)"]
+    types: [completed]
 
 jobs:
   smoke-test:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     strategy:
       fail-fast: false
       matrix:

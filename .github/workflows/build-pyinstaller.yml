@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build:
@@ -26,7 +27,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -185,14 +186,14 @@ jobs:
 
       - name: Upload artifact (macOS)
         if: matrix.os == 'mac'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: Lunascope-${{ matrix.platform }}
           path: dist/Lunascope-${{ matrix.platform }}.dmg
 
       - name: Upload artifact (Windows)
         if: matrix.os == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: Lunascope-${{ matrix.platform }}
           path: installer\Lunascope-Windows-Setup.exe
@@ -216,3 +217,15 @@ jobs:
               --notes "Latest automated build." \
               "$asset"
           fi
+
+  trigger-smoke-test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger smoke test workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run smoke-test-pyinstaller.yml \
+            --repo "${{ github.repository }}" \
+            --ref "${{ github.ref_name }}"
