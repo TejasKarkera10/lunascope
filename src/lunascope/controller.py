@@ -34,7 +34,7 @@ from PySide6.QtGui import QAction, QStandardItemModel
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDockWidget, QLabel, QFrame, QSizePolicy, QMessageBox, QLayout
 from PySide6.QtWidgets import QMainWindow, QProgressBar, QTableView, QAbstractItemView
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtWidgets import QFileDialog, QPushButton
 from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
 from PySide6.QtGui import QKeySequence, QGuiApplication
 from .file_dialogs import open_file_name, save_file_name
@@ -419,6 +419,7 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         self.sb_progress = QProgressBar()
         self.sb_progress.setRange(0, 100)
         self.sb_progress.setValue(0)
+        self.sb_progress.hide()
 
         sb.addPermanentWidget(self.sb_id ,1)
         sb.addPermanentWidget(vsep(),0)

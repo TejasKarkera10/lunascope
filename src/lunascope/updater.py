@@ -42,10 +42,19 @@ def start_background_check(current_version: str, on_update_available) -> _Versio
     return worker
 
 
+def _ssl_context():
+    import ssl
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
 def _fetch_latest_version() -> str:
     """Return the latest lunascope version string from PyPI, or raise."""
     req = urllib.request.Request(_PYPI_URL, headers={"User-Agent": "lunascope-updater"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as resp:
         data = json.loads(resp.read().decode())
     return data["info"]["version"]
 
