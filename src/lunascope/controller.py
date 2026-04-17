@@ -433,8 +433,32 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
         sb.addPermanentWidget(self.sb_progress,1)
         sb.addPermanentWidget(vsep(),0)
 
+        # version label + update badge (right side)
+        self._sb_version = mk_section(f"v{__version__}")
+        self._sb_version.setStyleSheet("color: #888888;")
+        sb.addPermanentWidget(self._sb_version, 0)
+
+        self._sb_update_badge = QPushButton("↑ Update available")
+        self._sb_update_badge.setFlat(True)
+        self._sb_update_badge.setStyleSheet(
+            "color: #4FC3F7; font-weight: bold; border: none; padding: 0 4px;"
+        )
+        self._sb_update_badge.setToolTip("A new version of Lunascope is available — click to update")
+        self._sb_update_badge.clicked.connect(self._check_for_updates)
+        self._sb_update_badge.hide()
+        sb.addPermanentWidget(self._sb_update_badge, 0)
+
         self.sb_mode.setMinimumWidth(120)
         self._update_mode_badge()
+
+        # wire toolbar Update button
+        self.ui.butt_update.clicked.connect(self._check_for_updates)
+        self.ui.butt_update.setToolTip("Check for updates")
+
+        # background version check on startup
+        self._updater_worker = _updater.start_background_check(
+            __version__, self._on_update_available
+        )
 
         # On Windows set a modest monospace font size for the text-edit panels
         # so they don't appear oversized on lower-resolution / non-HiDPI screens.
@@ -811,6 +835,12 @@ class Controller( QObject, CMapsMixin, ResultsIOMixin,
             lbl.setOpenExternalLinks(True)
 
         box.exec()
+
+    def _on_update_available(self, latest: str):
+        self._sb_update_badge.setToolTip(
+            f"Lunascope v{latest} is available — click to update"
+        )
+        self._sb_update_badge.show()
 
     def _check_for_updates(self):
         _updater.check_and_prompt(__version__, parent=self.ui)

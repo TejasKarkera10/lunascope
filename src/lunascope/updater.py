@@ -13,6 +13,35 @@ from PySide6.QtWidgets import (
 _PYPI_URL = "https://pypi.org/pypi/lunascope/json"
 
 
+class _VersionCheckWorker(QThread):
+    """Fetches the latest PyPI version silently in the background."""
+    update_available = Signal(str)  # emits latest version string if newer
+
+    def __init__(self, current_version: str, parent=None):
+        super().__init__(parent)
+        self._current = current_version
+
+    def run(self):
+        try:
+            latest = _fetch_latest_version()
+            is_newer = (
+                tuple(int(x) for x in latest.split("."))
+                > tuple(int(x) for x in self._current.split("."))
+            )
+            if is_newer:
+                self.update_available.emit(latest)
+        except Exception:
+            pass
+
+
+def start_background_check(current_version: str, on_update_available) -> _VersionCheckWorker:
+    """Start a background PyPI check; calls on_update_available(latest) if newer."""
+    worker = _VersionCheckWorker(current_version)
+    worker.update_available.connect(on_update_available)
+    worker.start()
+    return worker
+
+
 def _fetch_latest_version() -> str:
     """Return the latest lunascope version string from PyPI, or raise."""
     req = urllib.request.Request(_PYPI_URL, headers={"User-Agent": "lunascope-updater"})
