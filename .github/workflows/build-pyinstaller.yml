@@ -98,7 +98,7 @@ jobs:
             --hidden-import=IPython \
             --hidden-import=charset_normalizer \
             --hidden-import=certifi \
-            --collect-data=lunascope \
+            --collect-all=lunascope \
             --collect-data=matplotlib \
             --exclude-module=ipywidgets \
             --exclude-module=ipykernel \
@@ -124,7 +124,7 @@ jobs:
             --hidden-import=IPython `
             --hidden-import=charset_normalizer `
             --hidden-import=certifi `
-            --collect-data=lunascope `
+            --collect-all=lunascope `
             --collect-data=matplotlib `
             --exclude-module=ipywidgets `
             --exclude-module=ipykernel `
